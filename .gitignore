@@ -1,0 +1,11 @@
+Scripts/*
+share/*
+current.log
+output.wav
+pyvenv.cfg
+Include/*
+Lib/*
+.vscode/*
+__pycache__/*
+model/*
+legacy.txt
