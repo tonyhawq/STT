@@ -14,4 +14,4 @@ venv\Scripts\activate<br/>
 python -m pip install -r requirements.txt```<br/>
 
 # Running
-Run run.bat
+Run `run.bat`
