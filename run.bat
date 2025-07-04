@@ -1,3 +1,3 @@
 @echo off
-scripts/python stt.py
+Scripts\python.exe stt.py
 pause
