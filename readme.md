@@ -8,11 +8,12 @@ Install python deps from requirements.txt<br/>
 **(Optional)**:<br/>
 Install `parakeet-tdt-0.6b-v2` - however, the script will automatically install the needed stt model if it cannot find it.<br/>
 
-Setup:<br/>
-```# in the folder containing stt.py, requirements.txt, and config.ini```<br/>
-```python -m venv venv<br/>```<br/>
-```venv\Scripts\activate<br/>```<br/>
-```python -m pip install -r requirements.txt```<br/>
+Setup: (in the folder containing stt.py, requirements.txt, and config.ini)<br/>
+```bash
+python -m venv venv
+venv\Scripts\activate
+python -m pip install -r requirements.txt
+```
 
 # Running
 Run `run.bat`
