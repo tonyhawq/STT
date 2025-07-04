@@ -8,7 +8,8 @@
 3. **(Optional)**:<br/>
     Install `parakeet-tdt-0.6b-v2` - however, the script will automatically install the needed stt model if it cannot find it.<br/>
 
-Setup:<br/>
+## Simple Setup:<br/>
+Download all files and run this script:
 ```bash
 python -m venv FolderName
 FolderName\Scripts\activate
