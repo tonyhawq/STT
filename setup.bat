@@ -1,0 +1,6 @@
+@echo off
+echo Creating virtual environment...
+python -m venv venv
+echo Installing deps...
+venv\Scripts\python.exe -m pip install -r requirements.txt
+pause
