@@ -8,10 +8,12 @@
 3. **(Optional)**:<br/>
     Install `parakeet-tdt-0.6b-v2` - however, the script will automatically install the needed stt model if it cannot find it.<br/>
 
-Setup: (in the folder containing stt.py, requirements.txt, and config.ini)<br/>
+Setup:<br/>
 ```bash
-python -m venv venv
-venv\Scripts\activate
+python -m venv FolderName
+FolderName\Scripts\activate
+# move installed files into the new folder
+# then run
 python -m pip install -r requirements.txt
 ```
 
