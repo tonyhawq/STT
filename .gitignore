@@ -1,11 +1,6 @@
-Scripts/*
-share/*
 current.log
 output.wav
-pyvenv.cfg
-Include/*
-Lib/*
+venv/*
 .vscode/*
-__pycache__/*
 model/*
-legacy.txt
+pyvenv.cfg
