@@ -256,6 +256,20 @@ def colorize(val: str, time: float):
     thread = threading.Thread(target=_colorize, args=[val, time], daemon=True)
     thread.start()
 
+blockable_keys = ['w', 'a', 's', 'd', 'space']
+pressed_keys = {}
+
+def key_filter(event: keyboard.KeyboardEvent):
+    if not (event.name in blockable_keys):
+        return True
+    if event.event_type == 'down':
+        print("Keypress blocked", event.name)
+        pressed_keys[event.name] = True
+    else:
+        print("Depress blocked", event.name)
+        pressed_keys[event.name] = False
+    return False
+
 def submit():
     global state
     if state != State.ACCEPTING:
@@ -268,13 +282,12 @@ def submit():
     print("Submitting transcript")
     colorize("green", 1)
     pyperclip.copy(transcript)
-    common_keys = ['w', 'a', 's', 'd', 'space']
-    blocked_keys = []
-    pressed_keys = []
-    for key in common_keys:
+    global pressed_keys
+    pressed_keys = {}
+    for key in blockable_keys:
         if keyboard.is_pressed(key):
-            pressed_keys.append(key)
-        blocked_keys.append(keyboard.block_key(key))
+            pressed_keys[key] = True
+    hook = keyboard.hook(key_filter, True)
     controller.press(chat_key)
     controller.release(chat_key)
     time.sleep(chat_delay)
@@ -285,10 +298,12 @@ def submit():
     controller.press(pynput.keyboard.Key.enter)
     controller.release(pynput.keyboard.Key.enter)
     time.sleep(0.1)
-    for blocked in blocked_keys:
-        keyboard.unblock_key(blocked)
-    for key in pressed_keys:
-        keyboard.press(key)
+    keyboard.unhook(hook)
+    for key, value in pressed_keys.items():
+        if value:
+            keyboard.press(key)
+        else:
+            keyboard.release(key)
 
 def reject():
     global state
