@@ -9,6 +9,7 @@ import wave
 import typing
 import pyperclip
 import keyboard
+import mouse
 import subprocess
 import os
 import io
@@ -65,6 +66,7 @@ class ControlButton:
 
 activate_button: ControlButton
 reject_button: ControlButton
+radio_button: ControlButton
 autosend = False
 use_say = False
 chat_delay = 0
@@ -85,6 +87,7 @@ if True:
     activate_name = config.get("Input", "activate")
     reject_name = config.get("Input", "reject")
     autosend_str = config.get("Input", "autosend")
+    radio_str = config.get("Input", "radio_modifier")
     use_say_str = config.get("Output", "use_say")
     chat_delay_str = config.get("Output", "chat_delay")
     chat_key = config.get("Output", "chat_key")
@@ -96,10 +99,14 @@ if True:
     chat_delay = float(chat_delay_str)
     activate_button = ControlButton(activate_name, is_mousebutton(activate_name))
     reject_button = ControlButton(reject_name, is_mousebutton(reject_name))
+    radio_button = ControlButton(radio_str, is_mousebutton(radio_str))
+    print(f"Configured radio key is {radio_str}")
     if not is_input(activate_name):
         raise RuntimeError(f"Activate keybind {activate_name} is not an input.")
     if not is_input(reject_name):
         raise RuntimeError(f"Reject keybind {reject_name} is not an input.")
+    if not is_input(radio_str):
+        raise RuntimeError(f"Reject keybind {radio_str} is not an input.")
 
 class State(Enum):
     READY = 1
@@ -115,9 +122,19 @@ RECORDING_STREAM: pyaudio.Stream | None
 RECORDING_FRAMES = []
 STATUS_LOCK = threading.Lock()
 TRANSCRIBED = ""
+IS_RADIO = False
 controller = pynput.keyboard.Controller()
 
 thread_context = threading.local()
+
+def is_pressing_radio() -> bool:
+    if radio_button.is_key():
+        if keyboard.is_pressed(radio_button.control):
+            return True
+        return False
+    if mouse.is_pressed(button=radio_button.control):
+        return True
+    return False
 
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
@@ -231,10 +248,12 @@ def begin_recording():
     global RECORDING_FRAMES
     global STOP_RECORDING
     global RECORDING_START_TIME
+    global IS_RADIO
     if state != State.READY:
         return
     label.config(text="Recording...")
     with STATUS_LOCK:
+        IS_RADIO = False
         RECORDING_START_TIME = time.time()
         STOP_RECORDING = False
         state = State.RECORDING
@@ -351,6 +370,10 @@ def on_activate_press_handler():
     if state == State.READY:
         print("Activate press handler beginning recording")
         begin_recording()
+        if is_pressing_radio():
+            global IS_RADIO
+            IS_RADIO = True
+        set_radio_colors()
         return
     if state == State.ACCEPTING:
         print("Activate press handler accepting")
@@ -403,6 +426,27 @@ def on_reject_release():
     print("Reject release")
     reject_button.release()
     spawn_thread(on_reject_release_handler)
+
+def set_radio_colors():
+    if IS_RADIO:
+        label.config(bg="light blue")
+    else:
+        label.config(bg="white") 
+
+def on_radio_press_handler():
+    with STATUS_LOCK:
+        if state == State.READY:
+            print("Could not change IS_RADIO state")
+            return
+        global IS_RADIO
+        IS_RADIO = not IS_RADIO
+        set_radio_colors()
+
+def on_radio_press():
+    spawn_thread(on_radio_press_handler)
+
+def on_radio_release():
+    pass
     
 
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
@@ -410,6 +454,8 @@ def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
         on_activate_press() if pressed else on_activate_release()
     if reject_button.is_mouse() and reject_button.control == button.name:
         on_reject_press() if pressed else on_reject_release()
+    if radio_button.is_mouse() and radio_button.control == button.name:
+        on_radio_press() if pressed else on_radio_release()
 
 def key_press_key_to_string(key: pynput.keyboard.Key | pynput.keyboard.KeyCode | None) -> str:
     if key is None:
@@ -426,6 +472,8 @@ def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
         on_activate_press()
     if reject_button.is_key() and reject_button.control == key:
         on_reject_press()
+    if radio_button.is_key() and radio_button.control == key:
+        on_radio_press()
 
 def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
     key = key_press_key_to_string(key_raw)
@@ -433,6 +481,8 @@ def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None
         on_activate_release()
     if reject_button.is_key() and reject_button.control == key:
         on_reject_release()
+    if radio_button.is_key() and radio_button.control == key:
+        on_radio_release()
 
 def mouse_listener():
     with pynput.mouse.Listener(on_click=on_click) as listener:
