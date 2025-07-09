@@ -10,8 +10,9 @@ Edit the `config.ini` file to change keybinds and chat delay in case of space la
 
 # Installation
 ## Dependencies:
- - Python 3.11 or greater
+ - Python 3.11 *exact* - can be found at `https://www.python.org/downloads/release/python-3119/`
  - ~5GB storage space (~2.4 for STT model and ~2.4 for python libraries)
+ - ~5GB ram free
 ## Installation:
 1. Download all the files to a new folder
 2. Run setup.bat

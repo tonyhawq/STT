@@ -18,7 +18,7 @@ from huggingface_hub import hf_hub_download
 import traceback
 
 root = tk.Tk()
-root.title("Title")
+root.title("Speech To Text")
 root.attributes("-topmost", True)
 root.geometry("300x100")
 label = tk.Label(root, text="Pre-Init", wraplength=290, justify="left", font=("Arial", 12))
@@ -94,9 +94,9 @@ if True:
     activate_button = ControlButton(activate_name, is_mousebutton(activate_name))
     reject_button = ControlButton(reject_name, is_mousebutton(reject_name))
     if not is_input(activate_name):
-        raise RuntimeError()
+        raise RuntimeError(f"Activate keybind {activate_name} is not an input.")
     if not is_input(reject_name):
-        raise RuntimeError()
+        raise RuntimeError(f"Reject keybind {reject_name} is not an input.")
 
 class State(Enum):
     READY = 1

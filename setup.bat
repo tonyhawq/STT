@@ -11,10 +11,25 @@ echo ------------------------------------------------------
 python --version >nul 2>&1 && (
     python --version
 ) || (
-    echo Python not found. Install python from https://www.python.org/downloads/ or run the included python install script.
+    echo Python not found. Install python 3.11 from https://www.python.org/downloads/release/python-3119/.
     pause
     exit /b 1
 )
+
+python -c "import sys; exit(0) if sys.version_info[:2] == (3,11) else exit(1)"
+if %errorlevel% neq 0 (
+    echo Python 3.11 is required.
+    pause
+    exit /b 1
+)
+
+echo ------------------------------------------------------
+echo  Typically hangs on Uninstalling setuptools-65.5.0...
+echo           Wait for Installation Complete!
+echo ------------------------------------------------------
+echo             Press any key to continue!
+echo ------------------------------------------------------
+pause
 
 echo[
 if exist venv (
