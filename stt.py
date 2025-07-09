@@ -66,6 +66,7 @@ class ControlButton:
 activate_button: ControlButton
 reject_button: ControlButton
 autosend = False
+use_say = False
 chat_delay = 0
 chat_key = ""
 
@@ -84,12 +85,14 @@ if True:
     activate_name = config.get("Input", "activate")
     reject_name = config.get("Input", "reject")
     autosend_str = config.get("Input", "autosend")
+    use_say_str = config.get("Output", "use_say")
     chat_delay_str = config.get("Output", "chat_delay")
     chat_key = config.get("Output", "chat_key")
     path_to_model = config.get("Meta", "path_to_model")
     if path_to_model.startswith('"') and path_to_model.endswith('"'):
         path_to_model = path_to_model[1:-1]
     autosend = (autosend_str == "true")
+    use_say = (use_say_str == "true")
     chat_delay = float(chat_delay_str)
     activate_button = ControlButton(activate_name, is_mousebutton(activate_name))
     reject_button = ControlButton(reject_name, is_mousebutton(reject_name))
@@ -270,6 +273,31 @@ def key_filter(event: keyboard.KeyboardEvent):
         pressed_keys[event.name] = False
     return False
 
+def submit_chat(transcript: str):
+    pyperclip.copy(transcript)
+    controller.press(chat_key)
+    controller.release(chat_key)
+    time.sleep(chat_delay)
+    with controller.pressed(pynput.keyboard.Key.ctrl):
+        controller.press('v')
+        controller.release('v')
+    time.sleep(0.1)
+    controller.press(pynput.keyboard.Key.enter)
+    controller.release(pynput.keyboard.Key.enter)
+    time.sleep(0.1)
+
+def submit_say(transcript: str):
+    pyperclip.copy(f"Say \"{transcript}\"")
+    controller.press(pynput.keyboard.Key.tab)
+    controller.release(pynput.keyboard.Key.tab)
+    with controller.pressed(pynput.keyboard.Key.ctrl):
+        controller.press('v')
+        controller.release('v')
+    controller.press(pynput.keyboard.Key.enter)
+    controller.release(pynput.keyboard.Key.enter)
+    controller.press(pynput.keyboard.Key.tab)
+    controller.release(pynput.keyboard.Key.tab)
+
 def submit():
     global state
     if state != State.ACCEPTING:
@@ -281,23 +309,16 @@ def submit():
     label.configure(text=transcript)
     print("Submitting transcript")
     colorize("green", 1)
-    pyperclip.copy(transcript)
     global pressed_keys
     pressed_keys = {}
     for key in blockable_keys:
         if keyboard.is_pressed(key):
             pressed_keys[key] = True
     hook = keyboard.hook(key_filter, True)
-    controller.press(chat_key)
-    controller.release(chat_key)
-    time.sleep(chat_delay)
-    with controller.pressed(pynput.keyboard.Key.ctrl):
-        controller.press('v')
-        controller.release('v')
-    time.sleep(0.1)
-    controller.press(pynput.keyboard.Key.enter)
-    controller.release(pynput.keyboard.Key.enter)
-    time.sleep(0.1)
+    if use_say:
+        submit_say(transcript)
+    else:
+        submit_chat(transcript)
     keyboard.unhook(hook)
     for key, value in pressed_keys.items():
         if value:
