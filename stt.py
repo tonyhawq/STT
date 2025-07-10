@@ -539,12 +539,6 @@ def keyboard_listener():
         listener.join()
 
 def load_model(final: Box, can_spin: Box, loading_text: Box):
-    def on_error():
-        while True:
-            root.config(bg="red")
-            time.sleep(0.5)
-            root.config(bg="white")
-            time.sleep(0.5)
     print("model")
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
