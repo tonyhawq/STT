@@ -25,6 +25,87 @@ root.geometry("300x100")
 label = tk.Label(root, text="Pre-Init", wraplength=290, justify="left", font=("Arial", 12))
 label.pack(expand=True)
 
+def _global_exception_handler(exception: Exception, context: str = "No context available."):
+    try:
+        filename = "logs/" + str(time.time()) + ".log"
+        with io.open("current.log", "w") as log:
+            log.write(context)
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        with io.open(filename, "w") as log:
+            log.write(context)
+        message = f"Full stacktrace available at current.log and {filename} for exception {type(exception)}:\n{exception}"
+        messagebox.showwarning("Exception encountered", message=message)
+    except:
+        print("FATAL ERROR.")
+        quit()
+
+def _thread_ctx(func: typing.Callable, context: str, args: list = []):
+    try:
+        global thread_context
+        thread_context.value = context
+        print("calling", func, "with", args)
+        func(*args)
+    except Exception as e:
+        root.after(0, _global_exception_handler, e, context + ''.join(traceback.format_tb(e.__traceback__)))
+        
+_to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", "mainloop", "__call__", "callit"]
+
+def filtered_traceback() -> str:
+    stack = traceback.extract_stack()
+    filtered = ""
+    was_filtered = False
+    for frame in stack:
+        if frame.name == "filtered_traceback":
+            continue
+        if frame.name in _to_filter_functions:
+            if was_filtered:
+                filtered += " -> "
+            else:
+                filtered += "In "
+            filtered += frame.name
+            was_filtered = True
+        else:
+            if was_filtered:
+                filtered += " ->\n"
+            filtered += f"File {frame.filename}, line {frame.lineno}, in {frame.name}\n  {frame.line}\n"
+            was_filtered = False
+    return filtered
+
+def spawn_thread(func: typing.Callable, args: list = []):
+    context = ""
+    try:
+        context = thread_context.value
+    except:
+        pass
+    stack = context + filtered_traceback()
+    thread = threading.Thread(target=_thread_ctx, args=(func, stack, args), daemon=True)
+    thread.start()
+
+class Configurable():
+    def __init__(self, obj):
+        self.obj = obj
+        self.m_dirtied_by = 0
+    
+    def dirtied_by(self):
+        return self.m_dirtied_by
+    
+    def config(self, **kwargs):
+        self.obj.config(**kwargs) # type: ignore
+        self.m_dirtied_by = time.time()
+        return self.m_dirtied_by
+
+    def config_and_apply(self, **kwargs) -> typing.Callable[[typing.Callable[[typing.Any], None], float], None]:
+        dirtied_by = self.config(**kwargs)
+        def apply(callable, after):
+            def callable_wrapper():
+                time.sleep(after)
+                if dirtied_by != self.dirtied_by():
+                    return
+                callable(self.obj)
+            spawn_thread(callable_wrapper)
+        return apply
+
+
 audio = pyaudio.PyAudio()
 
 path_to_model = ""
@@ -110,6 +191,10 @@ if True:
     if not is_input(radio_str):
         raise RuntimeError(f"Reject keybind {radio_str} is not an input.")
 
+root.config()
+background = Configurable(root)
+label_background = Configurable(label)
+
 class State(Enum):
     READY = 1
     RECORDING = 2
@@ -138,62 +223,6 @@ def is_pressing_radio() -> bool:
     if mouse.is_pressed(button=control):
         return True
     return False
-
-def _global_exception_handler(exception: Exception, context: str = "No context available."):
-    try:
-        filename = "logs/" + str(time.time()) + ".log"
-        with io.open("current.log", "w") as log:
-            log.write(context)
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        with io.open(filename, "w") as log:
-            log.write(context)
-        message = f"Full stacktrace available at current.log and {filename} for exception {type(exception)}:\n{exception}"
-        messagebox.showwarning("Exception encountered", message=message)
-    except:
-        print("FATAL ERROR.")
-        quit()
-
-def _thread_ctx(func: typing.Callable, context: str, args: list = []):
-    try:
-        global thread_context
-        thread_context.value = context
-        print("calling", func, "with", args)
-        func(*args)
-    except Exception as e:
-        root.after(0, _global_exception_handler, e, context + ''.join(traceback.format_tb(e.__traceback__)))
-        
-_to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", "mainloop", "__call__", "callit"]
-
-def filtered_traceback() -> str:
-    stack = traceback.extract_stack()
-    filtered = ""
-    was_filtered = False
-    for frame in stack:
-        if frame.name == "filtered_traceback":
-            continue
-        if frame.name in _to_filter_functions:
-            if was_filtered:
-                filtered += " -> "
-            else:
-                filtered += "In "
-            filtered += frame.name
-            was_filtered = True
-        else:
-            if was_filtered:
-                filtered += " ->\n"
-            filtered += f"File {frame.filename}, line {frame.lineno}, in {frame.name}\n  {frame.line}\n"
-            was_filtered = False
-    return filtered
-
-def spawn_thread(func: typing.Callable, args: list = []):
-    context = ""
-    try:
-        context = thread_context.value
-    except:
-        pass
-    stack = context + filtered_traceback()
-    thread = threading.Thread(target=_thread_ctx, args=(func, stack, args), daemon=True)
-    thread.start()
 
 def _finalize_process():
     print("Finalizing with stack")
@@ -275,14 +304,10 @@ def end_recording():
     with STATUS_LOCK:
         STOP_RECORDING = True
 
-def _colorize(val: str, amount: float):
-    root.config(bg=val)
-    time.sleep(amount)
-    root.config(bg="white")
-
 def colorize(val: str, time: float):
-    thread = threading.Thread(target=_colorize, args=[val, time], daemon=True)
-    thread.start()
+    def _recolor(obj):
+        obj.config(bg="white")
+    background.config_and_apply(bg=val)(_recolor, time)
 
 blockable_keys = ['w', 'a', 's', 'd', 'space']
 pressed_keys = {}
@@ -298,9 +323,9 @@ def key_filter(event: keyboard.KeyboardEvent):
         pressed_keys[event.name] = False
     return False
 
-def submit_chat(transcript: str):
+def submit_chat(transcript: str, radio: bool):
     pyperclip.copy(transcript)
-    key_to_press = radio_key if IS_RADIO else chat_key
+    key_to_press = radio_key if radio else chat_key
     controller.press(key_to_press)
     controller.release(key_to_press)
     time.sleep(chat_delay)
@@ -312,8 +337,8 @@ def submit_chat(transcript: str):
     controller.release(pynput.keyboard.Key.enter)
     time.sleep(0.1)
 
-def submit_say(transcript: str):
-    if IS_RADIO:
+def submit_say(transcript: str, radio: bool):
+    if radio:
         pyperclip.copy(f"Say \"; {transcript}\"")
     else:
         pyperclip.copy(f"Say \"{transcript}\"")
@@ -344,10 +369,13 @@ def submit():
         if keyboard.is_pressed(key):
             pressed_keys[key] = True
     hook = keyboard.hook(key_filter, True)
+    radio = IS_RADIO
+    if radio:
+        label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
     if use_say:
-        submit_say(transcript)
+        submit_say(transcript, radio)
     else:
-        submit_chat(transcript)
+        submit_chat(transcript, radio)
     keyboard.unhook(hook)
     for key, value in pressed_keys.items():
         if value:
