@@ -128,21 +128,25 @@ controller = pynput.keyboard.Controller()
 thread_context = threading.local()
 
 def is_pressing_radio() -> bool:
+    control = radio_button.control.removesuffix("_l").removesuffix("_r")
     if radio_button.is_key():
-        if keyboard.is_pressed(radio_button.control):
+        if keyboard.is_pressed(control):
             return True
         return False
-    if mouse.is_pressed(button=radio_button.control):
+    if mouse.is_pressed(button=control):
         return True
     return False
 
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
+        filename = "logs/" + str(time.time()) + ".log"
         with io.open("current.log", "w") as log:
             log.write(context)
-        message = f"Full stacktrace available at current.log for exception {type(exception)}:\n{exception}"
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        with io.open(filename, "w") as log:
+            log.write(context)
+        message = f"Full stacktrace available at current.log and {filename} for exception {type(exception)}:\n{exception}"
         messagebox.showwarning("Exception encountered", message=message)
-        root.quit()
     except:
         print("FATAL ERROR.")
         quit()
@@ -435,6 +439,7 @@ def set_radio_colors():
 
 def on_radio_press_handler():
     with STATUS_LOCK:
+        print("radio press")
         if state == State.READY:
             print("Could not change IS_RADIO state")
             return
