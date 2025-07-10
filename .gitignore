@@ -5,3 +5,4 @@ venv/*
 model/*
 pyvenv.cfg
 logs/*
+dbg.lock

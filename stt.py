@@ -25,6 +25,12 @@ root.geometry("300x100")
 label = tk.Label(root, text="Pre-Init", wraplength=290, justify="left", font=("Arial", 12))
 label.pack(expand=True)
 
+verbose = False
+
+def verbose_print(*args, **kwargs):
+    if verbose:
+        print(*args, **kwargs)
+
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
         filename = "logs/" + str(time.time()) + ".log"
@@ -43,7 +49,7 @@ def _thread_ctx(func: typing.Callable, context: str, args: list = []):
     try:
         global thread_context
         thread_context.value = context
-        print("calling", func, "with", args)
+        verbose_print("calling", func, "with", args)
         func(*args)
     except Exception as e:
         root.after(0, _global_exception_handler, e, context + ''.join(traceback.format_tb(e.__traceback__)))
@@ -175,6 +181,9 @@ if True:
     chat_key = config.get("Output", "chat_key")
     radio_key = config.get("Output", "radio_key")
     path_to_model = config.get("Meta", "path_to_model")
+    verbose = True if config.get("Meta", "verbose") == "true" else False
+    if os.path.exists("dbg.lock"):
+        verbose = True
     if path_to_model.startswith('"') and path_to_model.endswith('"'):
         path_to_model = path_to_model[1:-1]
     autosend = (autosend_str == "true")
@@ -183,7 +192,7 @@ if True:
     activate_button = ControlButton(activate_name, is_mousebutton(activate_name))
     reject_button = ControlButton(reject_name, is_mousebutton(reject_name))
     radio_button = ControlButton(radio_str, is_mousebutton(radio_str))
-    print(f"Configured radio key is {radio_str}")
+    verbose_print(f"Configured radio key is {radio_str}")
     if not is_input(activate_name):
         raise RuntimeError(f"Activate keybind {activate_name} is not an input.")
     if not is_input(reject_name):
@@ -225,7 +234,7 @@ def is_pressing_radio() -> bool:
     return False
 
 def _finalize_process():
-    print("Finalizing with stack")
+    verbose_print("Finalizing.")
     global state
     with STATUS_LOCK:
         global STOP_RECORDING
@@ -316,10 +325,10 @@ def key_filter(event: keyboard.KeyboardEvent):
     if not (event.name in blockable_keys):
         return True
     if event.event_type == 'down':
-        print("Keypress blocked", event.name)
+        verbose_print("Keypress blocked", event.name)
         pressed_keys[event.name] = True
     else:
-        print("Depress blocked", event.name)
+        verbose_print("Depress blocked", event.name)
         pressed_keys[event.name] = False
     return False
 
@@ -442,26 +451,26 @@ def on_reject_release_handler():
     pass
 
 def on_activate_press():
-    print("Activate pressed")
+    verbose_print("Activate pressed")
     if activate_button.is_pressed():
         return
     activate_button.press()
     spawn_thread(on_activate_press_handler)
 
 def on_activate_release():
-    print("Activate released")
+    verbose_print("Activate released")
     activate_button.release()
     spawn_thread(on_activate_release_handler)
 
 def on_reject_press():
-    print("Reject press")
+    verbose_print("Reject press")
     if reject_button.is_pressed():
         return
     reject_button.press()
     spawn_thread(on_reject_press_handler)
 
 def on_reject_release():
-    print("Reject release")
+    verbose_print("Reject release")
     reject_button.release()
     spawn_thread(on_reject_release_handler)
 
@@ -479,9 +488,9 @@ def on_radio_press_handler():
         return
     was_radio_pressed = True
     with STATUS_LOCK:
-        print("radio press")
+        verbose_print("radio press")
         if state == State.READY:
-            print("Could not change IS_RADIO state")
+            verbose_print("Could not change IS_RADIO state")
             return
         global IS_RADIO
         IS_RADIO = not IS_RADIO
@@ -539,7 +548,6 @@ def keyboard_listener():
         listener.join()
 
 def load_model(final: Box, can_spin: Box, loading_text: Box):
-    print("model")
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):
