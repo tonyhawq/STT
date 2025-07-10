@@ -10,7 +10,6 @@ import typing
 import pyperclip
 import keyboard
 import mouse
-import subprocess
 import os
 import io
 from tkinter import messagebox
