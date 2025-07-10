@@ -71,6 +71,7 @@ autosend = False
 use_say = False
 chat_delay = 0
 chat_key = ""
+radio_key = ""
 
 def is_key(value: str) -> bool:
     special_keys = [k.name for k in pynput.keyboard.Key]
@@ -91,6 +92,7 @@ if True:
     use_say_str = config.get("Output", "use_say")
     chat_delay_str = config.get("Output", "chat_delay")
     chat_key = config.get("Output", "chat_key")
+    radio_key = config.get("Output", "radio_key")
     path_to_model = config.get("Meta", "path_to_model")
     if path_to_model.startswith('"') and path_to_model.endswith('"'):
         path_to_model = path_to_model[1:-1]
@@ -298,8 +300,9 @@ def key_filter(event: keyboard.KeyboardEvent):
 
 def submit_chat(transcript: str):
     pyperclip.copy(transcript)
-    controller.press(chat_key)
-    controller.release(chat_key)
+    key_to_press = radio_key if IS_RADIO else chat_key
+    controller.press(key_to_press)
+    controller.release(key_to_press)
     time.sleep(chat_delay)
     with controller.pressed(pynput.keyboard.Key.ctrl):
         controller.press('v')
@@ -310,7 +313,10 @@ def submit_chat(transcript: str):
     time.sleep(0.1)
 
 def submit_say(transcript: str):
-    pyperclip.copy(f"Say \"{transcript}\"")
+    if IS_RADIO:
+        pyperclip.copy(f"Say \"; {transcript}\"")
+    else:
+        pyperclip.copy(f"Say \"{transcript}\"")
     controller.press(pynput.keyboard.Key.tab)
     controller.release(pynput.keyboard.Key.tab)
     with controller.pressed(pynput.keyboard.Key.ctrl):
@@ -437,7 +443,13 @@ def set_radio_colors():
     else:
         label.config(bg="white") 
 
+was_radio_pressed = False
+
 def on_radio_press_handler():
+    global was_radio_pressed
+    if was_radio_pressed:
+        return
+    was_radio_pressed = True
     with STATUS_LOCK:
         print("radio press")
         if state == State.READY:
@@ -451,7 +463,8 @@ def on_radio_press():
     spawn_thread(on_radio_press_handler)
 
 def on_radio_release():
-    pass
+    global was_radio_pressed
+    was_radio_pressed = False
     
 
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
