@@ -12,6 +12,8 @@ import keyboard
 import mouse
 import os
 import io
+import re
+import requests
 from tkinter import messagebox
 from enum import Enum
 from huggingface_hub import hf_hub_download
@@ -24,6 +26,7 @@ root.geometry("300x100")
 label = tk.Label(root, text="Pre-Init", wraplength=290, justify="left", font=("Arial", 12))
 label.pack(expand=True)
 
+thread_context = threading.local()
 verbose = False
 
 def verbose_print(*args, **kwargs):
@@ -155,6 +158,7 @@ reject_button: ControlButton
 radio_button: ControlButton
 autosend = False
 use_say = False
+allow_version_checking = False
 chat_delay = 0
 chat_key = ""
 radio_key = ""
@@ -170,6 +174,46 @@ def is_mousebutton(value: str) -> bool:
 def is_input(value: str) -> bool:
     return is_key(value) or is_mousebutton(value)
 
+def fix_version_file():
+    version = "0.0.0"
+    if not os.path.exists("version.number"):
+        with open("version.number", "w") as file:
+            file.write(version)
+        return
+    with open("version.number", "r") as file:
+        version = file.read(-1).strip()
+    if bool(re.fullmatch(r'^\d+\.\d+\.\d+$', version)):
+        # valid
+        return
+    messagebox.showwarning("STT Version File Error", message=f"An invalid version was detected inside of the version file, expected x.x.x, got \"{version}\"")
+    os.remove("version.number")
+    return fix_version_file()
+
+def current_version():
+    fix_version_file()
+    version = "0.0.0"
+    with open("version.number", "r") as file:
+        version = file.read(-1).strip()
+    return version
+
+def latest_version():
+    url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
+    try:
+        response = requests.get(url, timeout=1)
+    except:
+        print("No internet connection.")
+        return "0.0.0"
+    if response.status_code != 200:
+        messagebox.showwarning("STT Response Error", message=f"Could not fetch latest version from github, got {response.status_code}")
+        return False
+    latest = response.json()["tag_name"]
+    return latest
+
+def version_greater(v1, v2):
+    t1 = tuple(map(int, v1.split(".")))
+    t2 = tuple(map(int, v2.split(".")))
+    return t1 > t2
+
 if True:
     activate_name = config.get("Input", "activate")
     reject_name = config.get("Input", "reject")
@@ -181,6 +225,7 @@ if True:
     radio_key = config.get("Output", "radio_key")
     path_to_model = config.get("Meta", "path_to_model")
     verbose = True if config.get("Meta", "verbose") == "true" else False
+    allow_version_checking = False if config.get("Meta", "disable_version_checking") == "true" else True
     if os.path.exists("dbg.lock"):
         verbose = True
     if path_to_model.startswith('"') and path_to_model.endswith('"'):
@@ -199,7 +244,12 @@ if True:
     if not is_input(radio_str):
         raise RuntimeError(f"Reject keybind {radio_str} is not an input.")
 
-root.config()
+if allow_version_checking:
+    current = current_version()
+    latest = latest_version()
+    if version_greater(latest, current):
+        spawn_thread(messagebox.showinfo, ["New Version Available", f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file."])
+
 background = Configurable(root)
 label_background = Configurable(label)
 
@@ -219,8 +269,6 @@ STATUS_LOCK = threading.Lock()
 TRANSCRIBED = ""
 IS_RADIO = False
 controller = pynput.keyboard.Controller()
-
-thread_context = threading.local()
 
 def is_pressing_radio() -> bool:
     control = radio_button.control.removesuffix("_l").removesuffix("_r")
