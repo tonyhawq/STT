@@ -245,6 +245,10 @@ def _finalize_process():
             RECORDING_STREAM.stop_stream()
             RECORDING_STREAM.close()
         label.config(text="Waiting...")
+    try:
+        os.remove("output.wav")
+    except:
+        print("Exception while removing output file.")
 
 def record():
     global state
