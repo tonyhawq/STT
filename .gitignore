@@ -4,3 +4,4 @@ venv/*
 .vscode/*
 model/*
 pyvenv.cfg
+logs/*
