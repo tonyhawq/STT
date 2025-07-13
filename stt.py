@@ -521,7 +521,7 @@ def colorize(val: str, time: float):
         obj.config(bg="white")
     background.config_and_apply(bg=val)(_recolor, time)
 
-blockable_keys = ['w', 'a', 's', 'd', 'space']
+blockable_keys = ['w', 'a', 's', 'd', 'alt', 'space']
 pressed_keys = {}
 
 def key_filter(event: keyboard.KeyboardEvent):
@@ -585,6 +585,9 @@ def submit():
     for key in blockable_keys:
         if keyboard.is_pressed(key):
             pressed_keys[key] = True
+    # fuck it special case
+    if pressed_keys["alt"]:
+        controller.release(pynput.keyboard.Key.alt_l)
     hook = keyboard.hook(key_filter, True)
     radio = IS_RADIO
     if radio:
