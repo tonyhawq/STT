@@ -19,5 +19,41 @@
         "path_to_model": "model/",
         "verbose": false,
         "enable_version_checking": true
+    },
+    "filters": {
+        "all_caps": {
+            "toggle": true,
+            "key_combination": "f1",
+            "actions": [
+                {
+                    "type": "script",
+                    "script": "filters/all_caps.py"
+                }
+            ]
+        },
+        "excited": {
+            "toggle": true,
+            "key_combination": "f2",
+            "actions": [
+                {
+                    "type": "script",
+                    "script": "filters/excited.py"
+                }
+            ]
+        },
+        "rage": {
+            "toggle": true,
+            "key_combination": "f3",
+            "actions": [
+                {
+                    "type": "filter",
+                    "name": "all_caps"
+                },
+                {
+                    "type": "filter",
+                    "name": "excited"
+                }
+            ]
+        }
     }
 }

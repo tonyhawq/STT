@@ -8,3 +8,4 @@ logs/*
 dbg.lock
 releases/*
 version.number
+filters/__pycache__/*

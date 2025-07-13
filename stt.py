@@ -14,6 +14,8 @@ import os
 import io
 import re
 import requests
+import uuid
+import importlib.util
 from tkinter import messagebox
 from enum import Enum
 from huggingface_hub import hf_hub_download
@@ -113,6 +115,115 @@ class Configurable():
             spawn_thread(callable_wrapper)
         return apply
 
+class ApplyableAction:
+    def __init__(self, name: str, manager: "FilterManager"):
+        self.manager = manager
+        self.name = name
+        self.enabled_by: dict[str, True] = {}
+        self.action: typing.Callable[[str], str] | None = None
+
+    def __repr__(self):
+        return "ApplyableAction." + self.name
+
+    def on_enable(self):
+        pass
+
+    def on_disable(self):
+        pass
+
+    def transform(self, input: str) -> str:
+        return self.action(input)
+
+class TransformAction(ApplyableAction):
+    def __init__(self, manager: "FilterManager", script_filename):
+        super().__init__(os.path.splitext(os.path.basename(script_filename))[0] + "." + str(uuid.uuid4()), manager)
+        spec = importlib.util.spec_from_file_location(os.path.splitext(os.path.basename(script_filename))[0], script_filename)
+        if spec is None:
+            raise ImportError(f"Could not load spec for {script_filename}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not hasattr(module, "process"):
+            raise ImportError(f"Plugin {script_filename} does not have a process() function.")
+        self.action = module.process
+    
+    def __repr__(self):
+        return "TransformAction." + self.name
+
+class InceptionAction(ApplyableAction):
+    def __init__(self, manager: "FilterManager", filter_to_apply: str):
+        super().__init__(filter_to_apply + ".applier."+ str(uuid.uuid4()), manager)
+        self.action = InceptionAction.noop
+        self.filter = filter_to_apply
+    
+    def on_enable(self):
+        self.manager.enable_filter(self.filter, self.name)
+
+    def on_disable(self):
+        self.manager.disable_filter(self.filter, self.name)
+
+    def __repr__(self):
+        return "InceptionAction." + self.name
+
+    def noop(self, input):
+        return input
+
+class Filter:
+    def __init__(self, name: str, manager: "FilterManager", actions: list[ApplyableAction]):
+        self.name = name
+        self.manager = manager
+        self.actions = actions
+        self.enabled_by: dict[str, True] = {}
+        self.manager.register(self)
+        
+    def __str__(self):
+        return "Filter." + self.name
+
+class FilterManager:
+    def __init__(self):
+        self.enabled_actions: dict[str, ApplyableAction] = {}
+        self.registered_filters: dict[str, Filter] = {}
+    
+    def register(self, filter: Filter):
+        if filter.name in self.registered_filters:
+            print(self.registered_filters)
+            raise RuntimeError(f"Attempted to register {filter.name} while {filter.name} is already registered.")
+        self.registered_filters[filter.name] = filter
+
+    def enable_filter(self, name: str, source: str):
+        if not name in self.registered_filters:
+            raise RuntimeError(f"Attempted to enable filter {name} while {name} does not exist.")
+        filter = self.registered_filters[name]
+        filter.enabled_by[source] = True
+        for action in filter.actions:
+            self.enable_action(action, source=filter)
+
+    def disable_filter(self, name: str, source: str):
+        if not name in self.registered_filters:
+            raise RuntimeError(f"Attempted to disable filter {name} while {name} does not exist.")
+        filter = self.registered_filters[name]
+        filter.enabled_by.pop(source, None)
+        if len(filter.enabled_by) > 0:
+            return
+        for action in filter.actions:
+            self.disable_action(action, source=filter)
+
+    def enable_action(self, action: ApplyableAction, source: Filter):
+        action.enabled_by[source.name] = True
+        if action.name in self.enabled_actions:
+            return
+        self.enabled_actions[action.name] = action
+        action.on_enable()
+    
+    def disable_action(self, action: ApplyableAction, source: Filter):
+        action.enabled_by.pop(source.name, None)
+        if len(action.enabled_by) == 0:
+            self.enabled_actions.pop(action.name, None)
+            action.on_disable()
+    
+    def transform_input(self, input: str) -> str:
+        for action in self.enabled_actions.values():
+            input = action.transform(input)
+        return input
 
 audio = pyaudio.PyAudio()
 
@@ -242,6 +353,8 @@ def set_control(control: str, name: str, action: typing.Callable, release: typin
     CONTROLS_BY_KEY[control] = control_button
     CONTROLS[name] = control_button
 
+FILTERS: FilterManager = FilterManager()
+
 def load_settings_from_config():
     config: dict
     with io.open("config.json") as config_file:
@@ -273,6 +386,20 @@ def load_settings_from_config():
         raise RuntimeError("Expected either \"say\" or \"chat\" as option for \"use_say_or_chat\" in \"output\"")
     global WORD_REPLACEMENTS
     WORD_REPLACEMENTS = config_get_propery(config, ["output", "word_replacements"], dict)
+    filters = config_get_propery(config, ["filters"], dict)
+    for name, filter in filters.items():
+        actions = config_get_propery(filter, ["actions"], list)
+        parsed_actions: list[ApplyableAction] = []
+        for action in actions:
+            type = config_get_propery(action, ["type"], str)
+            if type == "script":
+                filename = config_get_propery(action, ["script"], str)
+                parsed_actions.append(TransformAction(FILTERS, filename))
+            elif type == "filter":
+                filter_to_apply = config_get_propery(action, ["name"], str)
+                parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
+        Filter(name, FILTERS, parsed_actions)
+    print(FILTERS)
     
 
 background = Configurable(root)
@@ -440,7 +567,7 @@ def submit_say(transcript: str, radio: bool):
 def perform_transformations(transcript: str) -> str:
     for word, replacement in WORD_REPLACEMENTS.items():
         transcript = transcript.replace(word, replacement)
-    return transcript
+    return FILTERS.transform_input(transcript)
 
 def submit():
     global state
