@@ -18,10 +18,13 @@
     "meta": {
         "path_to_model": "model/",
         "verbose": false,
-        "enable_version_checking": true
+        "enable_version_checking": false,
+        "window_width": 300,
+        "window_height": 100
     },
     "filters": {
         "all_caps": {
+            "title": "CAPS",
             "toggle": true,
             "key_combination": "f1",
             "actions": [
@@ -32,6 +35,7 @@
             ]
         },
         "excited": {
+            "title": "!!!",
             "toggle": true,
             "key_combination": "f2",
             "actions": [
@@ -42,6 +46,7 @@
             ]
         },
         "rage": {
+            "title": "Rage",
             "toggle": true,
             "key_combination": "f3",
             "actions": [

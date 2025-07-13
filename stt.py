@@ -15,7 +15,10 @@ import io
 import re
 import requests
 import uuid
+import random
+import math
 import importlib.util
+from tkinter import ttk
 from tkinter import messagebox
 from enum import Enum
 from huggingface_hub import hf_hub_download
@@ -27,6 +30,8 @@ root.attributes("-topmost", True)
 root.geometry("300x100")
 label = tk.Label(root, text="Pre-Init", wraplength=290, justify="left", font=("Arial", 12))
 label.pack(expand=True)
+default_width = 300
+default_height = 100
 
 thread_context = threading.local()
 verbose = False
@@ -164,36 +169,93 @@ class InceptionAction(ApplyableAction):
     def __repr__(self):
         return "InceptionAction." + self.name
 
-    def noop(self, input):
+    def noop(input):
         return input
 
+class FilterActivation:
+    def __init__(self, keybind: str, toggle: bool):
+        self.keybind = keybind
+        self.toggle = toggle
+
 class Filter:
-    def __init__(self, name: str, manager: "FilterManager", actions: list[ApplyableAction]):
+    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation):
         self.name = name
+        self.title = title
         self.manager = manager
         self.actions = actions
+        self.activation_details = activated_by
         self.enabled_by: dict[str, True] = {}
         self.manager.register(self)
         
     def __str__(self):
         return "Filter." + self.name
 
+class ExpandableColumnFlow:
+    def __init__(self, parent, columns):
+        self.grid = tk.Frame(parent)
+        for col in range(columns):
+            self.grid.grid_columnconfigure(col, minsize=100)
+        self.grid.grid_rowconfigure(0, minsize=25)
+        self.grid.pack()
+        self.columns = columns
+        self.flat = []
+
+    def delete_button(self, widget: ttk.Label):
+        index: int | None = None
+        height_before = self.grid.winfo_reqheight()
+        for i, other_widget in enumerate(self.flat):
+            if other_widget == widget:
+                index = i
+                break
+        if index is None:
+            raise RuntimeError("No such widget exists.")
+        self.flat.pop(index).destroy()
+        for i in range(index, len(self.flat)):
+            to_move = self.flat[i]
+            to_move.grid(row=math.floor(i / self.columns), column=i % self.columns)
+        height_after = self.grid.winfo_reqheight()
+        root.geometry(f"{root.winfo_width()}x{root.winfo_height() - height_before + height_after}")
+
+    def add_button(self):
+        height_before = self.grid.winfo_reqheight()
+        widget = ttk.Label(self.grid, anchor="center")
+        widget.grid(row=math.floor(len(self.flat) / self.columns), column=len(self.flat) % self.columns, sticky="nsew")
+        widget.config(background="green")
+        self.flat.append(widget)
+        height_after = self.grid.winfo_reqheight()
+        root.geometry(f"{root.winfo_width()}x{root.winfo_height() - height_before + height_after}")
+        return widget
+
+DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)
+
 class FilterManager:
-    def __init__(self):
+    def __init__(self, display: ExpandableColumnFlow):
         self.enabled_actions: dict[str, ApplyableAction] = {}
         self.registered_filters: dict[str, Filter] = {}
-    
+        self.enabled_filters: dict[str, Filter] = {}
+        self.display = display
+
     def register(self, filter: Filter):
         if filter.name in self.registered_filters:
             print(self.registered_filters)
             raise RuntimeError(f"Attempted to register {filter.name} while {filter.name} is already registered.")
         self.registered_filters[filter.name] = filter
 
+    def is_enabling(self, name: str, source: str):
+        if not name in self.registered_filters:
+            raise RuntimeError(f"Attempted to know whether filter {name} is activated while {name} does not exist.")
+        filter = self.registered_filters[name]
+        return source in filter.enabled_by
+
     def enable_filter(self, name: str, source: str):
         if not name in self.registered_filters:
             raise RuntimeError(f"Attempted to enable filter {name} while {name} does not exist.")
         filter = self.registered_filters[name]
+        if len(filter.enabled_by) == 0:
+            filter.display = self.display.add_button()
+            filter.display.config(text=filter.title)
         filter.enabled_by[source] = True
+        self.enabled_filters[filter.name] = filter
         for action in filter.actions:
             self.enable_action(action, source=filter)
 
@@ -201,9 +263,14 @@ class FilterManager:
         if not name in self.registered_filters:
             raise RuntimeError(f"Attempted to disable filter {name} while {name} does not exist.")
         filter = self.registered_filters[name]
+        if len(filter.enabled_by) == 0:
+            return
         filter.enabled_by.pop(source, None)
+        self.enabled_filters.pop(filter.name, None)
         if len(filter.enabled_by) > 0:
             return
+        self.display.delete_button(filter.display)
+        filter.display = None
         for action in filter.actions:
             self.disable_action(action, source=filter)
 
@@ -223,6 +290,8 @@ class FilterManager:
     def transform_input(self, input: str) -> str:
         for action in self.enabled_actions.values():
             input = action.transform(input)
+            if not isinstance(input, str):
+                raise RuntimeError(f"Malformed plugin {action.name}: returned {type(result)} instead of str.")
         return input
 
 audio = pyaudio.PyAudio()
@@ -353,7 +422,7 @@ def set_control(control: str, name: str, action: typing.Callable, release: typin
     CONTROLS_BY_KEY[control] = control_button
     CONTROLS[name] = control_button
 
-FILTERS: FilterManager = FilterManager()
+FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
 def load_settings_from_config():
     config: dict
@@ -366,6 +435,11 @@ def load_settings_from_config():
     set_control(config_get_propery(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler)
     set_control(config_get_propery(config, ["input", "reject"], str), "reject", on_reject_press_handler, release=on_reject_release_handler)
     set_control(config_get_propery(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
+    global default_width
+    global default_height
+    default_width = config_get_propery(config, ["meta", "window_width"], int)
+    default_height = config_get_propery(config, ["meta", "window_height"], int)
+    root.geometry(str(int(default_width)) + "x" + str(int(default_height)))
     global path_to_model
     path_to_model = config_get_propery(config, ["meta", "path_to_model"], str)
     global autosend
@@ -389,6 +463,7 @@ def load_settings_from_config():
     filters = config_get_propery(config, ["filters"], dict)
     for name, filter in filters.items():
         actions = config_get_propery(filter, ["actions"], list)
+        title = config_get_propery(filter, ["title"], str)
         parsed_actions: list[ApplyableAction] = []
         for action in actions:
             type = config_get_propery(action, ["type"], str)
@@ -398,8 +473,8 @@ def load_settings_from_config():
             elif type == "filter":
                 filter_to_apply = config_get_propery(action, ["name"], str)
                 parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
-        Filter(name, FILTERS, parsed_actions)
-    print(FILTERS)
+        Filter(name, title, FILTERS, parsed_actions, FilterActivation(config_get_propery(filter, ["key_combination"], str), config_get_propery(filter, ["toggle"], bool)))
+    
     
 
 background = Configurable(root)
@@ -586,7 +661,7 @@ def submit():
         if keyboard.is_pressed(key):
             pressed_keys[key] = True
     # fuck it special case
-    if pressed_keys["alt"]:
+    if "alt" in pressed_keys:
         controller.release(pynput.keyboard.Key.alt_l)
     hook = keyboard.hook(key_filter, True)
     radio = IS_RADIO
@@ -776,6 +851,38 @@ def advance_wheel(wheel: str) -> str:
         return "-"
     return "-"
 
+class FilterActivationCallback:
+    def __init__(self, filter: Filter):
+        self.filter = filter
+        self.pressed = False
+
+    def on_press(self):
+        print(f"Pressed FilterActivationCallback for {self.filter.title}")
+        was_pressed = self.pressed
+        self.pressed = True
+        if self.filter.activation_details.toggle:
+            if not was_pressed:
+                print(f"And wasn't pressed {self.filter.title}")
+                if self.filter.manager.is_enabling(self.filter.name, "keypress"):
+                    print(f"So disabling {self.filter.title}")
+                    self.filter.manager.disable_filter(self.filter.name, "keypress")
+                else:
+                    print(f"So enabling {self.filter.title}")
+                    self.filter.manager.enable_filter(self.filter.name, "keypress")
+        else:
+            if not was_pressed:
+                self.filter.manager.enable_filter(self.filter.name, "keypress")
+
+    def on_release(self):
+        print(f"Released FilterActivationCallback for {self.filter.title}")
+        was_pressed = self.pressed
+        self.pressed = False
+        if self.filter.activation_details.toggle:
+            pass
+        else:
+            if was_pressed:
+                self.filter.manager.disable_filter(self.filter.name, "keypress")
+
 def init():
     wheel = "-"
     loading_finished = Box(False)
@@ -795,8 +902,12 @@ def init():
             label.config(text=loading_text.value+" "+wheel)
             time.sleep(0.5)
         time.sleep(0.5)
+    for registered_filter in FILTERS.registered_filters.values():
+        callback = FilterActivationCallback(registered_filter)
+        set_control(registered_filter.activation_details.keybind, registered_filter.name + ".keybind", callback.on_press, callback.on_release)
     spawn_thread(mouse_listener)
     spawn_thread(keyboard_listener)
+
     label.config(text="Waiting...")
 
 root.after(0, spawn_thread, init)
