@@ -10,6 +10,8 @@ files_to_package = [
     "run.bat",
     "setup.bat",
     "stt.py",
+    "filters/all_caps.py",
+    "filters/excited.py"
 ]
 
 if __name__ == "__main__":
