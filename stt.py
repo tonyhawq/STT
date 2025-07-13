@@ -220,6 +220,7 @@ def version_greater(v1, v2):
 
 CONTROLS: dict[str, ControlButton] = {}
 CONTROLS_BY_KEY: dict[str, ControlButton] = {}
+WORD_REPLACEMENTS: dict[str, str] = {}
 
 def config_get_propery(obj: dict | list | str | float, names: list[str], expected_type: typing.Type):
     derived = obj
@@ -270,6 +271,8 @@ def load_settings_from_config():
         chat_delay = config_get_propery(config, ["output", "chat_settings", "chat_delay"], float)
     else:
         raise RuntimeError("Expected either \"say\" or \"chat\" as option for \"use_say_or_chat\" in \"output\"")
+    global WORD_REPLACEMENTS
+    WORD_REPLACEMENTS = config_get_propery(config, ["output", "word_replacements"], dict)
     
 
 background = Configurable(root)
@@ -434,6 +437,11 @@ def submit_say(transcript: str, radio: bool):
     controller.press(pynput.keyboard.Key.tab)
     controller.release(pynput.keyboard.Key.tab)
 
+def perform_transformations(transcript: str) -> str:
+    for word, replacement in WORD_REPLACEMENTS.items():
+        transcript = transcript.replace(word, replacement)
+    return transcript
+
 def submit():
     global state
     if state != State.ACCEPTING:
@@ -455,9 +463,9 @@ def submit():
     if radio:
         label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
     if use_say:
-        submit_say(transcript, radio)
+        submit_say(perform_transformations(transcript), radio)
     else:
-        submit_chat(transcript, radio)
+        submit_chat(perform_transformations(transcript), radio)
     keyboard.unhook(hook)
     for key, value in pressed_keys.items():
         if value:

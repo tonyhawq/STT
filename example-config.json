@@ -12,7 +12,8 @@
             "chat_key": "t",
             "radio_key": "y",
             "chat_delay": 0.75
-        }
+        },
+        "word_replacements": {}
     },
     "meta": {
         "path_to_model": "model/",
