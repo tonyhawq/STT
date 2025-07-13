@@ -1,0 +1,22 @@
+{
+    "input": {
+        "activate": "x2",
+        "reject": "x1",
+        "radio_modifier": "ctrl_l",
+        "autosend": true
+    },
+    "output": {
+        "use_say_or_chat": "say",
+        "say_settings": {},
+        "chat_settings": {
+            "chat_key": "t",
+            "radio_key": "y",
+            "chat_delay": 0.75
+        }
+    },
+    "meta": {
+        "path_to_model": "model/",
+        "verbose": false,
+        "enable_version_checking": true
+    }
+}

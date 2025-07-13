@@ -1,11 +1,11 @@
 import tkinter as tk
-import configparser
 import threading
 import pynput
 import string
 import pyaudio
 import time
 import wave
+import json
 import typing
 import pyperclip
 import keyboard
@@ -118,25 +118,32 @@ audio = pyaudio.PyAudio()
 
 path_to_model = ""
 asr_model = None
-config = configparser.ConfigParser()
-config.read("config.ini")
 
 class Box:
     def __init__(self, value):
         self.value = value
 
 class ControlButton:
-    def __init__(self, control: str, is_mouse: bool):
+    def __init__(self, control: str, is_mouse: bool, action: typing.Callable):
         self.control = control
         self._is_mouse = is_mouse
         self._is_pressed = False
+        self.action = action
         self.lock = threading.Lock()
+    
+    def set_release_action(self, action: typing.Callable):
+        self.release_action = action
 
     def press(self):
+        if not self._is_pressed:
+            spawn_thread(self.action)
         with self.lock:
             self._is_pressed = True
     
     def release(self):
+        if self._is_pressed:
+            if not self.release_action is None:
+                spawn_thread(self.release_action)
         with self.lock:
             self._is_pressed = False
 
@@ -153,12 +160,9 @@ class ControlButton:
         with self.lock:
             return self._is_pressed
 
-activate_button: ControlButton
-reject_button: ControlButton
-radio_button: ControlButton
 autosend = False
 use_say = False
-allow_version_checking = False
+allow_version_checking = True
 chat_delay = 0
 chat_key = ""
 radio_key = ""
@@ -214,41 +218,59 @@ def version_greater(v1, v2):
     t2 = tuple(map(int, v2.split(".")))
     return t1 > t2
 
-if True:
-    activate_name = config.get("Input", "activate")
-    reject_name = config.get("Input", "reject")
-    autosend_str = config.get("Input", "autosend")
-    radio_str = config.get("Input", "radio_modifier")
-    use_say_str = config.get("Output", "use_say")
-    chat_delay_str = config.get("Output", "chat_delay")
-    chat_key = config.get("Output", "chat_key")
-    radio_key = config.get("Output", "radio_key")
-    path_to_model = config.get("Meta", "path_to_model")
-    verbose = True if config.get("Meta", "verbose") == "true" else False
-    allow_version_checking = False if config.get("Meta", "disable_version_checking") == "true" else True
-    if os.path.exists("dbg.lock"):
-        verbose = True
-    if path_to_model.startswith('"') and path_to_model.endswith('"'):
-        path_to_model = path_to_model[1:-1]
-    autosend = (autosend_str == "true")
-    use_say = (use_say_str == "true")
-    chat_delay = float(chat_delay_str)
-    activate_button = ControlButton(activate_name, is_mousebutton(activate_name))
-    reject_button = ControlButton(reject_name, is_mousebutton(reject_name))
-    radio_button = ControlButton(radio_str, is_mousebutton(radio_str))
-    verbose_print(f"Configured radio key is {radio_str}")
-    if not is_input(activate_name):
-        raise RuntimeError(f"Activate keybind {activate_name} is not an input.")
-    if not is_input(reject_name):
-        raise RuntimeError(f"Reject keybind {reject_name} is not an input.")
-    if not is_input(radio_str):
-        raise RuntimeError(f"Reject keybind {radio_str} is not an input.")
+CONTROLS: dict[str, ControlButton] = {}
+CONTROLS_BY_KEY: dict[str, ControlButton] = {}
 
-if allow_version_checking:
-    current = current_version()
-    latest = latest_version()
-    if version_greater(latest, current):
-        spawn_thread(messagebox.showinfo, ["New Version Available", f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file."])
+def config_get_propery(obj: dict | list | str | float, names: list[str], expected_type: typing.Type):
+    derived = obj
+    for name in names:
+        if not isinstance(derived, dict):
+            raise RuntimeError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {'->'.join(names)}. (See example config.json!)")
+        if not name in derived:
+            raise RuntimeError(f"Could not get value of option {names[-1]}, {name} was not found in tree {'->'.join(names)}. (See example config.json!)")
+        derived = derived[name]
+    if not isinstance(derived, expected_type):
+        raise RuntimeError(f"Option {name[-1]} was not a {expected_type}, but a {type(derived)}")
+    return derived
+
+def set_control(control: str, name: str, action: typing.Callable, release: typing.Callable = None):
+    if control in CONTROLS_BY_KEY:
+        raise RuntimeError(f"Mutliple controls using the same key is not implemented yet. Attempted to set {name} to be called when {control} is pressed, but there already exists a control which is bound to {control}.")
+    control_button = ControlButton(control, is_mousebutton(control), action)
+    control_button.set_release_action(release)
+    CONTROLS_BY_KEY[control] = control_button
+    CONTROLS[name] = control_button
+
+def load_settings_from_config():
+    config: dict
+    with io.open("config.json") as config_file:
+        config = json.loads(config_file.read(-1))
+    global verbose
+    verbose = config_get_propery(config, ["meta", "verbose"], bool)
+    global allow_version_checking
+    allow_version_checking = config_get_propery(config, ["meta", "enable_version_checking"], bool)
+    set_control(config_get_propery(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler)
+    set_control(config_get_propery(config, ["input", "reject"], str), "reject", on_reject_press_handler, release=on_reject_release_handler)
+    set_control(config_get_propery(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
+    global path_to_model
+    path_to_model = config_get_propery(config, ["meta", "path_to_model"], str)
+    global autosend
+    autosend = config_get_propery(config, ["input", "autosend"], bool)
+    global use_say
+    use_say_or_chat = config_get_propery(config, ["output", "use_say_or_chat"], str)
+    if use_say_or_chat == "say":
+        use_say = True
+    elif use_say_or_chat == "chat":
+        use_say = False
+        global chat_key
+        global chat_delay
+        global radio_key
+        chat_key = config_get_propery(config, ["output", "chat_settings", "chat_key"], str)
+        radio_key = config_get_propery(config, ["output", "chat_settings", "radio_key"], str)
+        chat_delay = config_get_propery(config, ["output", "chat_settings", "chat_delay"], float)
+    else:
+        raise RuntimeError("Expected either \"say\" or \"chat\" as option for \"use_say_or_chat\" in \"output\"")
+    
 
 background = Configurable(root)
 label_background = Configurable(label)
@@ -271,8 +293,8 @@ IS_RADIO = False
 controller = pynput.keyboard.Controller()
 
 def is_pressing_radio() -> bool:
-    control = radio_button.control.removesuffix("_l").removesuffix("_r")
-    if radio_button.is_key():
+    control = CONTROLS["radio"].control.removesuffix("_l").removesuffix("_r")
+    if CONTROLS["radio"].is_key():
         if keyboard.is_pressed(control):
             return True
         return False
@@ -478,7 +500,7 @@ def on_activate_press_handler():
         press = False
         start_time = time.time()
         while time.time() < (start_time + 0.5):
-            if not activate_button.is_pressed():
+            if not CONTROLS["activate"].is_pressed():
                 print("Released within 0.5 seconds")
                 press = True
                 break
@@ -500,30 +522,6 @@ def on_reject_press_handler():
 
 def on_reject_release_handler():
     pass
-
-def on_activate_press():
-    verbose_print("Activate pressed")
-    if activate_button.is_pressed():
-        return
-    activate_button.press()
-    spawn_thread(on_activate_press_handler)
-
-def on_activate_release():
-    verbose_print("Activate released")
-    activate_button.release()
-    spawn_thread(on_activate_release_handler)
-
-def on_reject_press():
-    verbose_print("Reject press")
-    if reject_button.is_pressed():
-        return
-    reject_button.press()
-    spawn_thread(on_reject_press_handler)
-
-def on_reject_release():
-    verbose_print("Reject release")
-    reject_button.release()
-    spawn_thread(on_reject_release_handler)
 
 def set_radio_colors():
     if IS_RADIO:
@@ -547,21 +545,15 @@ def on_radio_press_handler():
         IS_RADIO = not IS_RADIO
         set_radio_colors()
 
-def on_radio_press():
-    spawn_thread(on_radio_press_handler)
-
-def on_radio_release():
+def on_radio_release_handler():
     global was_radio_pressed
     was_radio_pressed = False
-    
 
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
-    if activate_button.is_mouse() and activate_button.control == button.name:
-        on_activate_press() if pressed else on_activate_release()
-    if reject_button.is_mouse() and reject_button.control == button.name:
-        on_reject_press() if pressed else on_reject_release()
-    if radio_button.is_mouse() and radio_button.control == button.name:
-        on_radio_press() if pressed else on_radio_release()
+    if button.name in CONTROLS_BY_KEY:
+        control = CONTROLS_BY_KEY[button.name]
+        if control.is_mouse():
+            control.press() if pressed else control.release()
 
 def key_press_key_to_string(key: pynput.keyboard.Key | pynput.keyboard.KeyCode | None) -> str:
     if key is None:
@@ -574,21 +566,17 @@ def key_press_key_to_string(key: pynput.keyboard.Key | pynput.keyboard.KeyCode |
 
 def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
     key = key_press_key_to_string(key_raw)
-    if activate_button.is_key() and activate_button.control == key:
-        on_activate_press()
-    if reject_button.is_key() and reject_button.control == key:
-        on_reject_press()
-    if radio_button.is_key() and radio_button.control == key:
-        on_radio_press()
+    if key in CONTROLS_BY_KEY:
+        control = CONTROLS_BY_KEY[key]
+        if control.is_key():
+            control.press()
 
 def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
     key = key_press_key_to_string(key_raw)
-    if activate_button.is_key() and activate_button.control == key:
-        on_activate_release()
-    if reject_button.is_key() and reject_button.control == key:
-        on_reject_release()
-    if radio_button.is_key() and radio_button.control == key:
-        on_radio_release()
+    if key in CONTROLS_BY_KEY:
+        control = CONTROLS_BY_KEY[key]
+        if control.is_key():
+            control.release()
 
 def mouse_listener():
     with pynput.mouse.Listener(on_click=on_click) as listener:
@@ -656,6 +644,12 @@ def init():
     can_spin = Box(False)
     loading_text = Box("Goaning stations...")
     label.config(text=loading_text.value)
+    load_settings_from_config()
+    if allow_version_checking:
+        current = current_version()
+        latest = latest_version()
+        if version_greater(latest, current):
+            spawn_thread(messagebox.showinfo, ["New Version Available", f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file."])
     spawn_thread(load_model, args=[loading_finished, can_spin, loading_text])
     while not loading_finished.value:
         while can_spin.value and not loading_finished.value:

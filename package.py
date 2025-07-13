@@ -3,8 +3,8 @@ import re
 import os
 
 files_to_package = [
-    "config.ini",
-    "example-config.ini",
+    "config.json",
+    "example-config.json",
     "readme.md",
     "requirements.txt",
     "run.bat",
