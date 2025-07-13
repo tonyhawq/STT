@@ -200,9 +200,12 @@ class ExpandableColumnFlow:
         self.columns = columns
         self.flat = []
 
+    def get_height(self):
+        return self.grid.winfo_reqheight() if len(self.flat) > 0 else 0
+
     def delete_button(self, widget: ttk.Label):
         index: int | None = None
-        height_before = self.grid.winfo_reqheight()
+        height_before = self.get_height()
         for i, other_widget in enumerate(self.flat):
             if other_widget == widget:
                 index = i
@@ -213,16 +216,16 @@ class ExpandableColumnFlow:
         for i in range(index, len(self.flat)):
             to_move = self.flat[i]
             to_move.grid(row=math.floor(i / self.columns), column=i % self.columns)
-        height_after = self.grid.winfo_reqheight()
+        height_after = self.get_height()
         root.geometry(f"{root.winfo_width()}x{root.winfo_height() - height_before + height_after}")
 
     def add_button(self):
-        height_before = self.grid.winfo_reqheight()
+        height_before = self.get_height()
         widget = ttk.Label(self.grid, anchor="center")
         widget.grid(row=math.floor(len(self.flat) / self.columns), column=len(self.flat) % self.columns, sticky="nsew")
         widget.config(background="green")
         self.flat.append(widget)
-        height_after = self.grid.winfo_reqheight()
+        height_after = self.get_height()
         root.geometry(f"{root.winfo_width()}x{root.winfo_height() - height_before + height_after}")
         return widget
 
@@ -414,6 +417,13 @@ def config_get_propery(obj: dict | list | str | float, names: list[str], expecte
         raise RuntimeError(f"Option {name[-1]} was not a {expected_type}, but a {type(derived)}")
     return derived
 
+def config_has_property(obj: dict | list | str | float, names: list[str], expected_type: typing.Type):
+    try:
+        config_get_propery(obj, names, expected_type)
+        return True
+    except:
+        return False
+
 def set_control(control: str, name: str, action: typing.Callable, release: typing.Callable = None):
     if control in CONTROLS_BY_KEY:
         raise RuntimeError(f"Mutliple controls using the same key is not implemented yet. Attempted to set {name} to be called when {control} is pressed, but there already exists a control which is bound to {control}.")
@@ -473,7 +483,10 @@ def load_settings_from_config():
             elif type == "filter":
                 filter_to_apply = config_get_propery(action, ["name"], str)
                 parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
-        Filter(name, title, FILTERS, parsed_actions, FilterActivation(config_get_propery(filter, ["key_combination"], str), config_get_propery(filter, ["toggle"], bool)))
+        activation = None
+        if config_has_property(filter, ["key_combination"], str):
+            activation = FilterActivation(config_get_propery(filter, ["key_combination"], str), config_get_propery(filter, ["toggle"], bool))
+        Filter(name, title, FILTERS, parsed_actions, activation)
     
     
 
@@ -629,6 +642,7 @@ def submit_say(transcript: str, radio: bool):
         pyperclip.copy(f"Say \"; {transcript}\"")
     else:
         pyperclip.copy(f"Say \"{transcript}\"")
+    time.sleep(0.05)
     controller.press(pynput.keyboard.Key.tab)
     controller.release(pynput.keyboard.Key.tab)
     with controller.pressed(pynput.keyboard.Key.ctrl):
@@ -638,6 +652,7 @@ def submit_say(transcript: str, radio: bool):
     controller.release(pynput.keyboard.Key.enter)
     controller.press(pynput.keyboard.Key.tab)
     controller.release(pynput.keyboard.Key.tab)
+    time.sleep(0.05)
 
 def perform_transformations(transcript: str) -> str:
     for word, replacement in WORD_REPLACEMENTS.items():
@@ -903,6 +918,8 @@ def init():
             time.sleep(0.5)
         time.sleep(0.5)
     for registered_filter in FILTERS.registered_filters.values():
+        if registered_filter.activation_details is None:
+            continue
         callback = FilterActivationCallback(registered_filter)
         set_control(registered_filter.activation_details.keybind, registered_filter.name + ".keybind", callback.on_press, callback.on_release)
     spawn_thread(mouse_listener)

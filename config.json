@@ -25,8 +25,6 @@
     "filters": {
         "all_caps": {
             "title": "CAPS",
-            "toggle": true,
-            "key_combination": "f1",
             "actions": [
                 {
                     "type": "script",
@@ -36,8 +34,6 @@
         },
         "excited": {
             "title": "!!!",
-            "toggle": true,
-            "key_combination": "f2",
             "actions": [
                 {
                     "type": "script",
@@ -48,7 +44,7 @@
         "rage": {
             "title": "Rage",
             "toggle": true,
-            "key_combination": "f3",
+            "key_combination": "`",
             "actions": [
                 {
                     "type": "filter",
