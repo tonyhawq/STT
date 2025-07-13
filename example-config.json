@@ -18,6 +18,43 @@
     "meta": {
         "path_to_model": "model/",
         "verbose": false,
-        "enable_version_checking": true
+        "enable_version_checking": false,
+        "window_width": 300,
+        "window_height": 100
+    },
+    "filters": {
+        "all_caps": {
+            "title": "CAPS",
+            "actions": [
+                {
+                    "type": "script",
+                    "script": "filters/all_caps.py"
+                }
+            ]
+        },
+        "excited": {
+            "title": "!!!",
+            "actions": [
+                {
+                    "type": "script",
+                    "script": "filters/excited.py"
+                }
+            ]
+        },
+        "rage": {
+            "title": "Rage",
+            "toggle": true,
+            "key_combination": "`",
+            "actions": [
+                {
+                    "type": "filter",
+                    "name": "all_caps"
+                },
+                {
+                    "type": "filter",
+                    "name": "excited"
+                }
+            ]
+        }
     }
 }
