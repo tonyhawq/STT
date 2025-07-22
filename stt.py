@@ -721,13 +721,17 @@ def submit():
     if "alt" in pressed_keys:
         controller.release(pynput.keyboard.Key.alt_l)
     hook = keyboard.hook(key_filter, True)
-    radio = IS_RADIO
-    if radio:
-        label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
-    if use_say:
-        submit_say(perform_transformations(transcript), radio)
-    else:
-        submit_chat(perform_transformations(transcript), radio)
+    try:
+        radio = IS_RADIO
+        if radio:
+            label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
+        if use_say:
+            submit_say(perform_transformations(transcript), radio)
+        else:
+            submit_chat(perform_transformations(transcript), radio)
+    except:
+        keyboard.unhook(hook)
+        raise
     keyboard.unhook(hook)
     for key, value in pressed_keys.items():
         if value:
