@@ -17,6 +17,7 @@ import requests
 import uuid
 import random
 import math
+import types
 import importlib.util
 from tkinter import ttk
 from tkinter import messagebox
@@ -61,12 +62,39 @@ def _thread_ctx(func: typing.Callable, context: str, args: list = []):
         verbose_print("calling", func, "with", args)
         func(*args)
     except Exception as e:
-        root.after(0, _global_exception_handler, e, context + ''.join(traceback.format_tb(e.__traceback__)))
+        root.after(0, _global_exception_handler, e, exception_to_filtered_traceback(e, context=context))
         
-_to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", "mainloop", "__call__", "callit"]
+_to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", "mainloop", "__call__", "callit", "spawn_thread"]
 
-def filtered_traceback() -> str:
-    stack = traceback.extract_stack()
+def exception_to_filtered_traceback(e: BaseException, context: str | None = None) -> str:
+    filtered = []
+    if not context is None:
+        filtered.append(f"Context for exception {type(e).__name__}: {e}:")
+        filtered.append(context)
+    filtered.append(f"Traceback for exception {type(e).__name__}: {e} (most recent call first):")
+    cause = e
+    while not (cause is None):
+        filtered.append(filtered_traceback(cause.__traceback__))
+        filtered.append(f"{type(cause).__name__}: {cause}")
+        if not cause.__cause__ is None:
+            cause = cause.__cause__
+            filtered.append(f"The above exception was the direct cause of the following:")
+            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call first):")
+        elif not (cause.__context__ is None) and not cause.__suppress_context__:
+            cause = cause.__context__
+            filtered.append(f"During handling of the above exception, another exception occurred:")
+            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call first):")
+        else:
+            cause = None
+    return '\n'.join(filtered)
+    
+
+def filtered_traceback(parent_frame: types.TracebackType | None = None) -> str:
+    stack: traceback.StackSummary
+    if parent_frame is None:
+        stack = traceback.extract_stack()
+    else:
+        stack = traceback.extract_tb(parent_frame)
     filtered = ""
     was_filtered = False
     for frame in stack:
@@ -141,7 +169,10 @@ class ApplyableAction:
         pass
 
     def transform(self, input: str) -> str:
-        return self.action(input)
+        try:
+            return self.action(input)
+        except Exception as e:
+            raise RuntimeError(f"An error occurred while transforming {input} in {self.name}: {str(e)}") from e
 
 class TransformAction(ApplyableAction):
     def __init__(self, manager: "FilterManager", script_filename):
