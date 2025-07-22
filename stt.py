@@ -124,8 +124,12 @@ class ApplyableAction:
     def __init__(self, name: str, manager: "FilterManager"):
         self.manager = manager
         self.name = name
-        self.enabled_by: dict[str, True] = {}
-        self.action: typing.Callable[[str], str] | None = None
+        self.enabled_by: dict[str, bool] = {}
+        self.action: typing.Callable[[str], str] = ApplyableAction.DefaultAction
+
+    @staticmethod
+    def DefaultAction(input):
+        raise RuntimeError(f"Attempted to call an ApplyableAction which does not have an action bound.\nGiven input string was: \"{input}\"")
 
     def __repr__(self):
         return "ApplyableAction." + self.name
@@ -145,6 +149,8 @@ class TransformAction(ApplyableAction):
         spec = importlib.util.spec_from_file_location(os.path.splitext(os.path.basename(script_filename))[0], script_filename)
         if spec is None:
             raise ImportError(f"Could not load spec for {script_filename}")
+        if spec.loader is None:
+            raise ImportError(f"Could not find loader for {script_filename} {spec}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         if not hasattr(module, "process"):
@@ -168,7 +174,8 @@ class InceptionAction(ApplyableAction):
 
     def __repr__(self):
         return "InceptionAction." + self.name
-
+    
+    @staticmethod
     def noop(input):
         return input
 
@@ -178,14 +185,15 @@ class FilterActivation:
         self.toggle = toggle
 
 class Filter:
-    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation):
+    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation | None):
         self.name = name
         self.title = title
         self.manager = manager
         self.actions = actions
-        self.activation_details = activated_by
-        self.enabled_by: dict[str, True] = {}
+        self.activation_details: FilterActivation | None = activated_by
+        self.enabled_by: dict[str, bool] = {}
         self.manager.register(self)
+        self.display: ttk.Label | None = None
         
     def __str__(self):
         return "Filter." + self.name
@@ -272,8 +280,9 @@ class FilterManager:
         self.enabled_filters.pop(filter.name, None)
         if len(filter.enabled_by) > 0:
             return
-        self.display.delete_button(filter.display)
-        filter.display = None
+        if not (filter.display is None):
+            self.display.delete_button(filter.display)
+            filter.display = None
         for action in filter.actions:
             self.disable_action(action, source=filter)
 
@@ -314,7 +323,7 @@ class ControlButton:
         self.action = action
         self.lock = threading.Lock()
     
-    def set_release_action(self, action: typing.Callable):
+    def set_release_action(self, action: typing.Callable | None):
         self.release_action = action
 
     def press(self):
@@ -405,7 +414,9 @@ CONTROLS: dict[str, ControlButton] = {}
 CONTROLS_BY_KEY: dict[str, ControlButton] = {}
 WORD_REPLACEMENTS: dict[str, str] = {}
 
-def config_get_propery(obj: dict | list | str | float, names: list[str], expected_type: typing.Type):
+T = typing.TypeVar('T')
+
+def config_get_propery(obj: dict | list | str | float, names: list[str], expected_type: typing.Type[T]) -> T:
     derived = obj
     for name in names:
         if not isinstance(derived, dict):
@@ -414,17 +425,17 @@ def config_get_propery(obj: dict | list | str | float, names: list[str], expecte
             raise RuntimeError(f"Could not get value of option {names[-1]}, {name} was not found in tree {'->'.join(names)}. (See example config.json!)")
         derived = derived[name]
     if not isinstance(derived, expected_type):
-        raise RuntimeError(f"Option {name[-1]} was not a {expected_type}, but a {type(derived)}")
+        raise RuntimeError(f"Option {names[-1]} was not a {expected_type}, but a {type(derived)}")
     return derived
 
-def config_has_property(obj: dict | list | str | float, names: list[str], expected_type: typing.Type):
+def config_has_property(obj: dict | list | str | float, names: list[str], expected_type: typing.Type[T]) -> bool:
     try:
         config_get_propery(obj, names, expected_type)
         return True
     except:
         return False
 
-def set_control(control: str, name: str, action: typing.Callable, release: typing.Callable = None):
+def set_control(control: str, name: str, action: typing.Callable, release: typing.Callable | None = None):
     if control in CONTROLS_BY_KEY:
         raise RuntimeError(f"Mutliple controls using the same key is not implemented yet. Attempted to set {name} to be called when {control} is pressed, but there already exists a control which is bound to {control}.")
     control_button = ControlButton(control, is_mousebutton(control), action)
@@ -871,11 +882,16 @@ class FilterActivationCallback:
         self.filter = filter
         self.pressed = False
 
+    def get_activation_details(self) -> FilterActivation:
+        if self.filter.activation_details is None:
+            raise RuntimeError(f"Attempted to get the activation_details of a callback for filter {self.filter.name} which did not have an activation.")
+        return self.filter.activation_details
+
     def on_press(self):
         print(f"Pressed FilterActivationCallback for {self.filter.title}")
         was_pressed = self.pressed
         self.pressed = True
-        if self.filter.activation_details.toggle:
+        if self.get_activation_details().toggle:
             if not was_pressed:
                 print(f"And wasn't pressed {self.filter.title}")
                 if self.filter.manager.is_enabling(self.filter.name, "keypress"):
@@ -892,7 +908,7 @@ class FilterActivationCallback:
         print(f"Released FilterActivationCallback for {self.filter.title}")
         was_pressed = self.pressed
         self.pressed = False
-        if self.filter.activation_details.toggle:
+        if self.get_activation_details().toggle:
             pass
         else:
             if was_pressed:
