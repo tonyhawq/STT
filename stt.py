@@ -51,8 +51,8 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
             log.write(context)
         message = f"{type(exception).__name__}:\n{exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
         messagebox.showwarning("Exception encountered", message=message)
-    except:
-        print("FATAL ERROR.")
+    except BaseException as e:
+        print(f"Fatal error encountered while processing {type(exception).__name__} ({exception}): {type(e).__name__}: {e}")
         quit()
 
 def _thread_ctx(func: typing.Callable, context: str, args: list = []):
