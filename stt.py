@@ -49,7 +49,7 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         with io.open(filename, "w") as log:
             log.write(context)
-        message = f"Full stacktrace available at current.log and {filename} for exception {type(exception)}:\n{exception}"
+        message = f"{type(exception).__name__}:\n{exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
         messagebox.showwarning("Exception encountered", message=message)
     except:
         print("FATAL ERROR.")
