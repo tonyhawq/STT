@@ -11,6 +11,7 @@ Edit the `config.json` file to change keybinds and chat delay in case of space l
 # Installation
 ## Dependencies:
  - Python 3.11 *exact* - can be found at `https://www.python.org/downloads/release/python-3119/`
+ - ADD PYTHON TO PATH, and DISABLE PATH LENGTH LIMIT
  - ~5GB storage space (~2.4 for STT model and ~2.4 for python libraries)
  - ~5GB ram free
 ## Installation:
