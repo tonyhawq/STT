@@ -16,7 +16,7 @@ python --version >nul 2>&1 && (
     exit /b 1
 )
 
-python -c "import sys; exit(0) if sys.version_info[:2] == (3,11) else exit(1)"
+python -c "import sys; exit(0) if sys.version_info.major == 3 and sys.version_info.minor == 11 else exit(1)"
 if %errorlevel% neq 0 (
     echo Python 3.11 is required.
     pause
