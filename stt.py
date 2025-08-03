@@ -51,7 +51,7 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
             log.write(context)
         message = f"{type(exception).__name__}:\n{exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
         messagebox.showwarning("Exception encountered", message=message)
-    except BaseException as e:
+    except Exception as e:
         print(f"Fatal error encountered while processing {type(exception).__name__} ({exception}): {type(e).__name__}: {e}")
         quit()
 
@@ -66,7 +66,7 @@ def _thread_ctx(func: typing.Callable, context: str, args: list = []):
         
 _to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", "mainloop", "__call__", "callit", "spawn_thread"]
 
-def exception_to_filtered_traceback(e: BaseException, context: str | None = None) -> str:
+def exception_to_filtered_traceback(e: Exception, context: str | None = None) -> str:
     filtered = []
     if not context is None:
         filtered.append(f"Context for exception {type(e).__name__}: {e}:")
@@ -216,7 +216,8 @@ class FilterActivation:
         self.toggle = toggle
 
 class Filter:
-    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation | None):
+    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation | None, background: str|None="green"):
+        self.background = "green" if background is None else background
         self.name = name
         self.title = title
         self.manager = manager
@@ -295,7 +296,7 @@ class FilterManager:
         filter = self.registered_filters[name]
         if len(filter.enabled_by) == 0:
             filter.display = self.display.add_button()
-            filter.display.config(text=filter.title)
+            filter.display.config(text=filter.title, background=filter.background)
         filter.enabled_by[source] = True
         self.enabled_filters[filter.name] = filter
         for action in filter.actions:
@@ -388,7 +389,6 @@ use_say = False
 allow_version_checking = True
 chat_delay = 0
 chat_key = ""
-radio_key = ""
 
 def is_key(value: str) -> bool:
     special_keys = [k.name for k in pynput.keyboard.Key]
@@ -447,16 +447,20 @@ WORD_REPLACEMENTS: dict[str, str] = {}
 
 T = typing.TypeVar('T')
 
+class ConfigError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+
 def config_get_propery(obj: dict | list | str | float, names: list[str], expected_type: typing.Type[T]) -> T:
     derived = obj
     for name in names:
         if not isinstance(derived, dict):
-            raise RuntimeError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {'->'.join(names)}. (See example config.json!)")
+            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {'->'.join(names)}. (See example config.json!)")
         if not name in derived:
-            raise RuntimeError(f"Could not get value of option {names[-1]}, {name} was not found in tree {'->'.join(names)}. (See example config.json!)")
+            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not found in tree {'->'.join(names)}. (See example config.json!)")
         derived = derived[name]
     if not isinstance(derived, expected_type):
-        raise RuntimeError(f"Option {names[-1]} was not a {expected_type}, but a {type(derived)}")
+        raise ConfigError(f"Option {names[-1]} was not a {expected_type}, but a {type(derived)}")
     return derived
 
 def config_has_property(obj: dict | list | str | float, names: list[str], expected_type: typing.Type[T]) -> bool:
@@ -504,9 +508,7 @@ def load_settings_from_config():
         use_say = False
         global chat_key
         global chat_delay
-        global radio_key
         chat_key = config_get_propery(config, ["output", "chat_settings", "chat_key"], str)
-        radio_key = config_get_propery(config, ["output", "chat_settings", "radio_key"], str)
         chat_delay = config_get_propery(config, ["output", "chat_settings", "chat_delay"], float)
     else:
         raise RuntimeError("Expected either \"say\" or \"chat\" as option for \"use_say_or_chat\" in \"output\"")
@@ -526,9 +528,12 @@ def load_settings_from_config():
                 filter_to_apply = config_get_propery(action, ["name"], str)
                 parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
         activation = None
+        background_color = None
         if config_has_property(filter, ["key_combination"], str):
             activation = FilterActivation(config_get_propery(filter, ["key_combination"], str), config_get_propery(filter, ["toggle"], bool))
-        Filter(name, title, FILTERS, parsed_actions, activation)
+        if config_has_property(filter, ["color"], str):
+            background_color = config_get_propery(filter, ["color"], str)
+        Filter(name, title, FILTERS, parsed_actions, activation, background=background_color)
     
     
 
@@ -665,11 +670,10 @@ def key_filter(event: keyboard.KeyboardEvent):
         pressed_keys[event.name] = False
     return False
 
-def submit_chat(transcript: str, radio: bool):
+def submit_chat(transcript: str):
     pyperclip.copy(transcript)
-    key_to_press = radio_key if radio else chat_key
-    controller.press(key_to_press)
-    controller.release(key_to_press)
+    controller.press(chat_key)
+    controller.release(chat_key)
     time.sleep(chat_delay)
     with controller.pressed(pynput.keyboard.Key.ctrl):
         controller.press('v')
@@ -679,14 +683,12 @@ def submit_chat(transcript: str, radio: bool):
     controller.release(pynput.keyboard.Key.enter)
     time.sleep(0.1)
 
-def submit_say(transcript: str, radio: bool):
-    if radio:
-        pyperclip.copy(f"Say \"; {transcript}\"")
-    else:
-        pyperclip.copy(f"Say \"{transcript}\"")
+def submit_say(transcript: str):
+    pyperclip.copy(f"Say \"{transcript}\"")
     time.sleep(0.05)
     controller.press(pynput.keyboard.Key.tab)
     controller.release(pynput.keyboard.Key.tab)
+    time.sleep(0.05)
     with controller.pressed(pynput.keyboard.Key.ctrl):
         controller.press('v')
         controller.release('v')
@@ -725,10 +727,11 @@ def submit():
         radio = IS_RADIO
         if radio:
             label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
+            transcript = transcript + "; "
         if use_say:
-            submit_say(perform_transformations(transcript), radio)
+            submit_say(perform_transformations(transcript))
         else:
-            submit_chat(perform_transformations(transcript), radio)
+            submit_chat(perform_transformations(transcript))
     except:
         keyboard.unhook(hook)
         raise

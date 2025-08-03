@@ -10,7 +10,6 @@
         "say_settings": {},
         "chat_settings": {
             "chat_key": "t",
-            "radio_key": "y",
             "chat_delay": 0.75
         },
         "word_replacements": {}
@@ -38,6 +37,17 @@
                 {
                     "type": "script",
                     "script": "filters/excited.py"
+                }
+            ]
+        },
+        "security_radio": {
+            "title": "Sec",
+            "toggle": true,
+            "color": "red",
+            "actions": [
+                {
+                    "type": "script",
+                    "script": "filters/security.py"
                 }
             ]
         },
