@@ -51,6 +51,18 @@
                 }
             ]
         },
+        "science_radio": {
+            "title": "Science",
+            "toggle": true,
+            "color": "purple",
+            "text_color": "white",
+            "actions": [
+                {
+                    "type": "script",
+                    "script": "filters/science.py"
+                }
+            ]
+        },
         "rage": {
             "title": "Rage",
             "toggle": true,

@@ -216,8 +216,9 @@ class FilterActivation:
         self.toggle = toggle
 
 class Filter:
-    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation | None, background: str|None="green"):
+    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation | None, background: str|None="green", text_color: str|None="black"):
         self.background = "green" if background is None else background
+        self.text_color = "black" if text_color is None else text_color
         self.name = name
         self.title = title
         self.manager = manager
@@ -296,7 +297,7 @@ class FilterManager:
         filter = self.registered_filters[name]
         if len(filter.enabled_by) == 0:
             filter.display = self.display.add_button()
-            filter.display.config(text=filter.title, background=filter.background)
+            filter.display.config(text=filter.title, background=filter.background, foreground=filter.text_color)
         filter.enabled_by[source] = True
         self.enabled_filters[filter.name] = filter
         for action in filter.actions:
@@ -594,6 +595,13 @@ def config_has_property(obj: ConfigObject, names: list[str], expected_type: typi
     except:
         return False
 
+def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> T|None:
+    try:
+        return config_get_property(obj, names, expected_type)
+    except:
+        return None
+        
+
 def set_control(control: str, name: str, action: typing.Callable, release: typing.Callable | None = None):
     if control in CONTROLS_BY_KEY:
         raise RuntimeError(f"Mutliple controls using the same key is not implemented yet. Attempted to set {name} to be called when {control} is pressed, but there already exists a control which is bound to {control}.")
@@ -652,12 +660,11 @@ def load_settings_from_config():
                 filter_to_apply = config_get_property(action, ["name"], str)
                 parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
         activation = None
-        background_color = None
         if config_has_property(filter, ["key_combination"], str):
             activation = FilterActivation(config_get_property(filter, ["key_combination"], str), config_get_property(filter, ["toggle"], bool))
-        if config_has_property(filter, ["color"], str):
-            background_color = config_get_property(filter, ["color"], str)
-        Filter(name, title, FILTERS, parsed_actions, activation, background=background_color)
+        Filter(name, title, FILTERS, parsed_actions, activation,
+               background=config_get_optional_property(filter, ["color"], str),
+               text_color=config_get_optional_property(filter, ["text_color"], str))
     
     
 
