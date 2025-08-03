@@ -446,26 +446,151 @@ CONTROLS_BY_KEY: dict[str, ControlButton] = {}
 WORD_REPLACEMENTS: dict[str, str] = {}
 
 T = typing.TypeVar('T')
+U = typing.TypeVar('U')
+V = typing.TypeVar('V')
 
 class ConfigError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
-def config_get_propery(obj: dict | list | str | float, names: list[str], expected_type: typing.Type[T]) -> T:
-    derived = obj
-    for name in names:
-        if not isinstance(derived, dict):
-            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {'->'.join(names)}. (See example config.json!)")
-        if not name in derived:
-            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not found in tree {'->'.join(names)}. (See example config.json!)")
-        derived = derived[name]
-    if not isinstance(derived, expected_type):
-        raise ConfigError(f"Option {names[-1]} was not a {expected_type}, but a {type(derived)}")
-    return derived
+def strip_generics_from(tval):
+    origin = getattr(tval, '__origin__', None)
+    if origin is None:
+        return tval
+    return origin
 
-def config_has_property(obj: dict | list | str | float, names: list[str], expected_type: typing.Type[T]) -> bool:
+class ConfigObject(typing.Generic[T]):
+    def __init__(self, value: T, parent:"ConfigObject|None" = None, key:str|None = None):
+        if isinstance(value, ConfigObject):
+            raise RuntimeError()
+        self._value: T = value
+        self._parent = parent
+        self._key = key
+    
+    def __getattr__(self, attr):
+        return getattr(self._value, attr)
+    
+    def __setattr__(self, attr, val):
+        if attr.startswith("_"):
+            super().__setattr__(attr, val)
+        else:
+            setattr(self._value, attr, val)
+
+    def __getitem__(self, key):
+        return ConfigObject(self._value[key], parent=self, key=key) # type: ignore
+
+    @typing.overload
+    def __iter__(self: "ConfigObject[list[V]]") -> typing.Iterator["ConfigObject[V]"]:
+        ...
+    
+    @typing.overload
+    def __iter__(self: "ConfigObject[dict[V, U]]") -> typing.Iterator["typing.Tuple[V, ConfigObject[U]]"]:
+        ...
+
+    def __iter__(self) -> object:
+        if self.isinstance(dict):
+            for key, val in self._value.items(): #type: ignore
+                yield key, ConfigObject(val, self, key)
+            return
+        elif self.isinstance(list):
+            for k, item in enumerate(self._value): #type: ignore
+                yield ConfigObject(item, self, str(k))
+            return
+        raise RuntimeError("Attempted to call __iter__ on non-list/dict ConfigObject")
+    
+    def __len__(self):
+        return len(self._value) #type: ignore
+
+    def isinstance(self, type):
+        return isinstance(self._value, type)
+    
+    def decay_fully(self):
+        val = self
+        while isinstance(val, ConfigObject):
+            val = self.decay()
+        return val
+
+    def decay(self):
+        return self._value
+
+@typing.overload
+def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[list[T]]) -> ConfigObject[list[T]]:
+    ...
+
+@typing.overload
+def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[dict[T, U]]) -> ConfigObject[dict[T, U]]:
+    ...
+
+@typing.overload
+def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> T:
+    ...
+
+def pretty_print_configobject(bottom: ConfigObject, expected: str):
+    level = 0
+    chain: list[ConfigObject] = []
+    current = bottom
+    while not current is None:
+        chain.append(current)
+        current = current._parent
+    chain.reverse()
+    out = []
+    is_dict = True
+    def is_last(i):
+        return i == len(chain) - 1
+    for i, obj in enumerate(chain):
+        indent = " " * (i * 2)
+        key = ('root' if obj._parent is None else '???') if obj._key is None else str(obj._key)
+        if is_dict:
+            out.append(f"\n{indent}\"{key}\": ")
+        else:
+            out.append(f"\n{indent}[{key}]: ")
+        is_dict = obj.isinstance(dict)
+        if obj.isinstance(list):
+            out.append("[")
+        elif obj.isinstance(dict):
+            out.append("{")
+        else:
+            out.append(str(obj._value))
+        if is_last(i):
+            out.append(f"\n{indent}{'  '}Expected {expected}\n")
+    chain.reverse()
+    for j, obj in enumerate(chain):
+        i = len(chain) - j
+        indent = " " * (i * 2)
+        out.append(indent)
+        if obj.isinstance(list):
+            out.append("]\n")
+        elif obj.isinstance(dict):
+            out.append("}\n")
+        else:
+            out.append("\n")
+    return "".join(out)
+
+def doublequote(val: str) -> str:
+    return f"\"{val}\""
+
+def config_get_property(obj, names, expected_type) -> object:
+    derived = obj
+    expected_type = strip_generics_from(expected_type)
+    for name in names:
+        if not derived.isinstance(dict):
+            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {pretty_print_configobject(derived, expected=f'dictionary, got {type(derived.decay()).__name__}')}. (See example config.json!)")
+        derived = typing.cast(ConfigObject[dict], derived)
+        if not name in derived.decay():
+            likely_type = dict
+            if name == names[-1]:
+                likely_type = expected_type
+            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not found in tree {pretty_print_configobject(derived, doublequote(name) + f' (a {likely_type.__name__} value)')}. (See example config.json!)")
+        derived = derived[name]
+    if not derived.isinstance(expected_type):
+        raise ConfigError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__}")
+    if expected_type is list or expected_type is dict:
+        return derived
+    return derived.decay()
+
+def config_has_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> bool:
     try:
-        config_get_propery(obj, names, expected_type)
+        config_get_property(obj, names, expected_type)
         return True
     except:
         return False
@@ -481,58 +606,58 @@ def set_control(control: str, name: str, action: typing.Callable, release: typin
 FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
 def load_settings_from_config():
-    config: dict
+    config: ConfigObject
     with io.open("config.json") as config_file:
-        config = json.loads(config_file.read(-1))
+        config = ConfigObject(json.loads(config_file.read(-1)))
     global verbose
-    verbose = config_get_propery(config, ["meta", "verbose"], bool)
+    verbose = config_get_property(config, ["meta", "verbose"], bool)
     global allow_version_checking
-    allow_version_checking = config_get_propery(config, ["meta", "enable_version_checking"], bool)
-    set_control(config_get_propery(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler)
-    set_control(config_get_propery(config, ["input", "reject"], str), "reject", on_reject_press_handler, release=on_reject_release_handler)
-    set_control(config_get_propery(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
+    allow_version_checking = config_get_property(config, ["meta", "enable_version_checking"], bool)
+    set_control(config_get_property(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler)
+    set_control(config_get_property(config, ["input", "reject"], str), "reject", on_reject_press_handler, release=on_reject_release_handler)
+    set_control(config_get_property(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
     global default_width
     global default_height
-    default_width = config_get_propery(config, ["meta", "window_width"], int)
-    default_height = config_get_propery(config, ["meta", "window_height"], int)
+    default_width = config_get_property(config, ["meta", "window_width"], int)
+    default_height = config_get_property(config, ["meta", "window_height"], int)
     root.geometry(str(int(default_width)) + "x" + str(int(default_height)))
     global path_to_model
-    path_to_model = config_get_propery(config, ["meta", "path_to_model"], str)
+    path_to_model = config_get_property(config, ["meta", "path_to_model"], str)
     global autosend
-    autosend = config_get_propery(config, ["input", "autosend"], bool)
+    autosend = config_get_property(config, ["input", "autosend"], bool)
     global use_say
-    use_say_or_chat = config_get_propery(config, ["output", "use_say_or_chat"], str)
+    use_say_or_chat = config_get_property(config, ["output", "use_say_or_chat"], str)
     if use_say_or_chat == "say":
         use_say = True
     elif use_say_or_chat == "chat":
         use_say = False
         global chat_key
         global chat_delay
-        chat_key = config_get_propery(config, ["output", "chat_settings", "chat_key"], str)
-        chat_delay = config_get_propery(config, ["output", "chat_settings", "chat_delay"], float)
+        chat_key = config_get_property(config, ["output", "chat_settings", "chat_key"], str)
+        chat_delay = config_get_property(config, ["output", "chat_settings", "chat_delay"], float)
     else:
         raise RuntimeError("Expected either \"say\" or \"chat\" as option for \"use_say_or_chat\" in \"output\"")
     global WORD_REPLACEMENTS
-    WORD_REPLACEMENTS = config_get_propery(config, ["output", "word_replacements"], dict)
-    filters = config_get_propery(config, ["filters"], dict)
-    for name, filter in filters.items():
-        actions = config_get_propery(filter, ["actions"], list)
-        title = config_get_propery(filter, ["title"], str)
+    WORD_REPLACEMENTS = config_get_property(config, ["output", "word_replacements"], dict[str, str]).decay()
+    filters = config_get_property(config, ["filters"], dict[str, dict])
+    for name, filter in filters:
+        actions = config_get_property(filter, ["actions"], list)
+        title = config_get_property(filter, ["title"], str)
         parsed_actions: list[ApplyableAction] = []
         for action in actions:
-            type = config_get_propery(action, ["type"], str)
+            type = config_get_property(action, ["type"], str)
             if type == "script":
-                filename = config_get_propery(action, ["script"], str)
+                filename = config_get_property(action, ["script"], str)
                 parsed_actions.append(TransformAction(FILTERS, filename))
             elif type == "filter":
-                filter_to_apply = config_get_propery(action, ["name"], str)
+                filter_to_apply = config_get_property(action, ["name"], str)
                 parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
         activation = None
         background_color = None
         if config_has_property(filter, ["key_combination"], str):
-            activation = FilterActivation(config_get_propery(filter, ["key_combination"], str), config_get_propery(filter, ["toggle"], bool))
+            activation = FilterActivation(config_get_property(filter, ["key_combination"], str), config_get_property(filter, ["toggle"], bool))
         if config_has_property(filter, ["color"], str):
-            background_color = config_get_propery(filter, ["color"], str)
+            background_color = config_get_property(filter, ["color"], str)
         Filter(name, title, FILTERS, parsed_actions, activation, background=background_color)
     
     
