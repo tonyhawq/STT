@@ -526,7 +526,6 @@ def config_get_property(obj: ConfigObject, names: list[str], expected_type: typi
     ...
 
 def pretty_print_configobject(bottom: ConfigObject, expected: str):
-    level = 0
     chain: list[ConfigObject] = []
     current = bottom
     while not current is None:
@@ -583,7 +582,7 @@ def config_get_property(obj, names, expected_type) -> object:
             raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not found in tree {pretty_print_configobject(derived, doublequote(name) + f' (a {likely_type.__name__} value)')}. (See example config.json!)")
         derived = derived[name]
     if not derived.isinstance(expected_type):
-        raise ConfigError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__}")
+        raise ConfigError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__} in tree {pretty_print_configobject(derived, expected_type.__name__)}")
     if expected_type is list or expected_type is dict:
         return derived
     return derived.decay()
