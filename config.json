@@ -44,24 +44,14 @@
             "title": "Sec",
             "toggle": true,
             "color": "red",
-            "actions": [
-                {
-                    "type": "script",
-                    "script": "filters/security.py"
-                }
-            ]
+            "action": "filters/security.py"
         },
         "science_radio": {
             "title": "Science",
             "toggle": true,
             "color": "purple",
             "text_color": "white",
-            "actions": [
-                {
-                    "type": "script",
-                    "script": "filters/science.py"
-                }
-            ]
+            "action": "filters/science.py"
         },
         "rage": {
             "title": "Rage",

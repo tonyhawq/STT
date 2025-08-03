@@ -648,17 +648,26 @@ def load_settings_from_config():
     WORD_REPLACEMENTS = config_get_property(config, ["output", "word_replacements"], dict[str, str]).decay()
     filters = config_get_property(config, ["filters"], dict[str, dict])
     for name, filter in filters:
-        actions = config_get_property(filter, ["actions"], list)
+        has_single = config_has_property(filter, ["action"], str)
+        has_double = config_has_property(filter, ["actions"], list)
+        if has_single and has_double:
+            raise ConfigError(f"Attempted to create a filter with both an \"action\" and with \"actions\". Only define one of them in tree {pretty_print_configobject(config_get_property(filter, ['actions'], list), 'action, got actions.')}")
+        if not has_single and not has_double:
+            raise ConfigError(f"Attempted to create a filter which lacked both an \"action\" and an \"actions\" field in tree {pretty_print_configobject(config_get_property(filter, ['actions'], list), 'actions or action')}")
         title = config_get_property(filter, ["title"], str)
         parsed_actions: list[ApplyableAction] = []
-        for action in actions:
-            type = config_get_property(action, ["type"], str)
-            if type == "script":
-                filename = config_get_property(action, ["script"], str)
-                parsed_actions.append(TransformAction(FILTERS, filename))
-            elif type == "filter":
-                filter_to_apply = config_get_property(action, ["name"], str)
-                parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
+        if has_single:
+            parsed_actions.append(TransformAction(FILTERS, config_get_property(filter, ["action"], str)))
+        elif has_double:
+            actions = config_get_property(filter, ["actions"], list)
+            for action in actions:
+                type = config_get_property(action, ["type"], str)
+                if type == "script":
+                    filename = config_get_property(action, ["script"], str)
+                    parsed_actions.append(TransformAction(FILTERS, filename))
+                elif type == "filter":
+                    filter_to_apply = config_get_property(action, ["name"], str)
+                    parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
         activation = None
         if config_has_property(filter, ["key_combination"], str):
             activation = FilterActivation(config_get_property(filter, ["key_combination"], str), config_get_property(filter, ["toggle"], bool))
