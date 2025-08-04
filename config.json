@@ -2,7 +2,7 @@
     "input": {
         "activate": "x2",
         "reject": "x1",
-        "radio_modifier": "ctrl_l",
+        "radio_modifier": "ctrl",
         "autosend": true
     },
     "output": {
