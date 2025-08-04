@@ -1204,10 +1204,8 @@ def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
     if key_raw is None:
         return
     bind = Pressable(KeyButton.from_input(key_raw))
-    print(f"Pressed {bind}")
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
-        print(f"And was control {control}")
         if control.is_key():
             control.press()
 
