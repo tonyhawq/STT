@@ -378,28 +378,17 @@ class MouseButton:
         return False
     
 class KeyButton:
-    def __init__(self, button: pynput.keyboard.KeyCode):
-        self.button = button
+    def __init__(self, scancode: int):
+        self.scancode: int = scancode
 
     def __repr__(self):
-        return "key " + str(getattr(self.button, "char", None)) + " keycode " + str(self.button)
-    
-    @staticmethod
-    def from_input(button: pynput.keyboard.Key | pynput.keyboard.KeyCode):
-        if isinstance(button, pynput.keyboard.KeyCode):
-            return KeyButton(Pressable._normalize_special(button))
-        if isinstance(button, pynput.keyboard.Key):
-            name = button.name.removesuffix("_l").removesuffix("_r")
-            if getattr(pynput.keyboard.Key, name, None) is not None:
-                return KeyButton(getattr(pynput.keyboard.Key, name).value)
-            return KeyButton(button.value)
-        raise RuntimeError(f"Attempted to get the keycode of {type(button).__name__}")
+        return "scancode: " + str(self.scancode)
 
     def __hash__(self) -> int:
-        return self.button.__hash__()
+        return self.scancode
 
     def __eq__(self, other) -> bool:
-        return self.button == other.button
+        return self.scancode == other.scancode
     
     def is_mouse(self):
         return False
@@ -423,53 +412,26 @@ class Pressable:
     def __str__(self):
         return f"Pressable({self.control.__str__()})"
 
-    _vk_to_char: dict[int, str] = {}
-
-    @staticmethod
-    def _normalize_special(code: pynput.keyboard.KeyCode) -> pynput.keyboard.KeyCode:
-        if code.vk is None:
-            return code
-        if code.vk not in Pressable._vk_to_char:
-            return code
-        new_code = pynput.keyboard.KeyCode.from_char(Pressable._vk_to_char[code.vk])
-        new_code.vk = code.vk
-        return new_code
-
-    @staticmethod
-    def _char_to_keycode(char: str) -> pynput.keyboard.KeyCode:
-        if len(char) != 1:
-            raise ValueError()
-        if (not char in string.printable):
-            raise ValueError()
-        return pynput.keyboard.KeyCode.from_char(char)
-
-    _special_keynames: dict[str, pynput.keyboard.KeyCode] = {}
-
-    @staticmethod
-    def _keycode_from_str(val: str) -> pynput.keyboard.KeyCode:
-        try:
-            if val in Pressable._special_keynames:
-                return Pressable._special_keynames[val]
-            return getattr(pynput.keyboard.Key, val).value
-        except AttributeError:
-            return Pressable._char_to_keycode(val)
-
     @staticmethod
     def _mouse_button_from_str(val: str) -> str:
         getattr(pynput.mouse.Button, val)
         return val
 
     @staticmethod
-    def parse_hotkey(hotkey: str) -> "list[Pressable]":
+    def parse_hotkey(hotkey: str) -> "list[list[Pressable]]":
         # allows ctrl + p + x
         values = hotkey.split("+")
-        pressables = []
+        pressables: list[list[Pressable]] = []
         for value in values:
             try:
-                pressables.append(Pressable(KeyButton(Pressable._keycode_from_str(value.strip()))))
+                codes = keyboard.key_to_scan_codes(value)
+                aliases = []
+                for scancode in codes:
+                    aliases.append(Pressable(KeyButton(scancode)))
+                pressables.append(aliases)
             except ValueError:
                 try:
-                    pressables.append(Pressable(MouseButton(Pressable._mouse_button_from_str(value.strip()))))
+                    pressables.append([Pressable(MouseButton(Pressable._mouse_button_from_str(value.strip())))])
                 except AttributeError as notmouse:
                     raise RuntimeError(f"Invalid key/mousebutton \"{value}\" in hotkey \"{hotkey}\"") from notmouse
         return pressables
@@ -505,16 +467,6 @@ def _get_vks():
         'numpad dec': 0x6E,
         'numpad slash': 0x6F,
     }
-    for key, vk in shitty_hardcoded_windows.items():
-        Pressable._vk_to_char[vk] = key
-        special_keycode = pynput.keyboard.KeyCode.from_char(key)
-        special_keycode.vk = vk
-        Pressable._special_keynames[key] = special_keycode
-    for key in string.printable.lower():
-        vk = ctypes.windll.user32.VkKeyScanW(ctypes.c_wchar(key))
-        if vk == -1:
-            raise ValueError(f"Invalid VK mapping for {key}")
-        Pressable._vk_to_char[vk & 0xff] = key
 
 _get_vks()
 
@@ -564,7 +516,37 @@ class ControlButton:
     def is_pressed(self):
         with self.lock:
             return self._is_pressed
+        
+class Control:
+    def __init__(self, controlled_by: list[ControlButton], press: typing.Callable[[], None], release: typing.Callable[[], None]):
+        self.controlled_by = controlled_by
+        self.press = press
+        self.release = release
+        self.pressed = False
+        self.pressed_by = 0
+        def press_hook():
+            self._check_press()
+            self.pressed_by += 1
+        def release_hook():
+            self.pressed_by -= 1
+            self._check_release()
+        self.press_hook = press_hook
+        self.release_hook = release_hook
 
+    def _check_press(self):
+        if self.pressed_by == 0:
+            self.press()
+
+    def _check_release(self):
+        if self.pressed_by == 0:
+            self.release()
+
+    def is_pressed(self) -> bool:
+        for control in self.controlled_by:
+            if control.is_pressed():
+                return True
+        return False
+        
 autosend = False
 use_say = False
 allow_version_checking = True
@@ -622,8 +604,8 @@ def version_greater(v1, v2):
     t2 = tuple(map(int, v2.split(".")))
     return t1 > t2
 
-CONTROLS: dict[str, ControlButton] = {}
-CONTROLS_BY_KEY: dict[Pressable, ControlButton] = {}
+CONTROLS: dict[str, Control] = {}
+CONTROLBUTTONS_BY_KEY: dict[Pressable, ControlButton] = {}
 WORD_REPLACEMENTS: dict[str, str] = {}
 
 T = typing.TypeVar('T')
@@ -782,11 +764,11 @@ def config_get_optional_property(obj: ConfigObject, names: list[str], expected_t
         return None
 
 class KeyCombinationControl:
-    def __init__(self, bind: "list[Pressable]", press: typing.Callable, release: typing.Callable, _suppress: bool = False):
+    def __init__(self, bind: "list[list[Pressable]]", press: typing.Callable, release: typing.Callable, _suppress: bool = False):
         self.keys = bind
         self.press_action = press
         self.release_action = release
-        self._currently_pressed: dict[Pressable, None] = {}
+        self._currently_pressed: dict[int, None] = {}
         self._pressed_count = 0
         self._press_threshold = len(bind)
         self.suppression_logic: bool | typing.Callable[[], bool] = _suppress
@@ -805,50 +787,52 @@ class KeyCombinationControl:
             self.release_action()
 
     def to_callbacks(self):
-        callbacks: dict[Pressable, tuple[typing.Callable, typing.Callable]] = {}
-        for key in self.keys:
-            def child_press(k=key):
+        callbacks: list[tuple[list[Pressable], typing.Callable[[], None], typing.Callable[[], None]]] = []
+        for i, key in enumerate(self.keys):
+            def child_press(k=i):
                 if k in self._currently_pressed:
                     return
                 self._currently_pressed[k] = None
                 self._pressed_count += 1
                 self._check_press()
-            def child_release(k=key):
+            def child_release(k=i):
                 print("release")
                 if self._currently_pressed.pop(k, True) is None:
                     self._check_depress()
                     self._pressed_count -= 1
-            callbacks[key] = (child_press, child_release)
+            callbacks.append((key, child_press, child_release))
         return callbacks
 
 def _literal_true():
     return True
 
-def _set_simple_control(control: Pressable, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool | typing.Callable[[], bool] = False):
+def _set_simple_control(aliases: list[Pressable], name: str, action: typing.Callable[[], None], release: typing.Callable[[], None] | None = None, _suppress: bool | typing.Callable[[], bool] = False):
     if name in CONTROLS:
         raise RuntimeError(f"Attempted to create duplicate control \"{name}\", a control already exists with this name.")
-    if control in CONTROLS_BY_KEY:
-        control_button = CONTROLS_BY_KEY[control]
-        control_button.add_press(action)
-        if isinstance(_suppress, bool):
-            if _suppress:
-                # if should suppress just this keybind, then it will always suppress
-                # if not, it doesn't matter because other keybinds might want to suppress
-                control_button.should_suppress = _literal_true
+    collected: list[ControlButton] = []
+    def _void():
+        return None
+    control = Control(controlled_by=[], press=action, release=_void if release is None else release)
+    for alias in aliases:
+        if alias in CONTROLBUTTONS_BY_KEY:
+            button = CONTROLBUTTONS_BY_KEY[alias]
+            button.add_press(control.press_hook)
+            button.add_release(control.release_hook)
+            if isinstance(_suppress, bool):
+                if _suppress:
+                    button.should_suppress = _literal_true
+            else:
+                def supression_wrapper(func=_suppress, last_func=button.should_suppress):
+                    return func() or last_func()
+                button.should_suppress = supression_wrapper
         else:
-            def suppression_wrapper(func=_suppress, last_func=control_button.should_suppress):
-                print("testing suppression")
-                return func() or last_func()
-            control_button.should_suppress = suppression_wrapper
-        if release is not None:
-            control_button.add_release(release)
-        CONTROLS[name] = control_button
-        return
-    control_button = ControlButton(control, action, suppression_logic=_suppress)
-    if release is not None:
-        control_button.add_release(release)
-    CONTROLS_BY_KEY[control] = control_button
-    CONTROLS[name] = control_button
+            button = ControlButton(alias, action=control.press_hook, suppression_logic=_suppress)
+            button.add_release(control.release_hook)
+            CONTROLBUTTONS_BY_KEY[alias] = button
+            collected.append(button)
+    control.controlled_by = collected
+    CONTROLS[name] = control
+    
 
 def set_control(hotkey: str, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool = False):
     buttons = Pressable.parse_hotkey(hotkey)
@@ -860,8 +844,9 @@ def set_control(hotkey: str, name: str, action: typing.Callable, release: typing
         return
     control = KeyCombinationControl(buttons, press=action, release=(lambda: ...) if release is None else release, _suppress=_suppress)
     callbacks = control.to_callbacks()
-    for bind, cb in callbacks.items():
-        _set_simple_control(bind, f"{name}@{str(bind)}", cb[0], cb[1], _suppress=control.suppression_logic)
+    for cb in callbacks:
+        binds = cb[0]
+        _set_simple_control(binds, f"{name}@{str(binds)}", cb[1], cb[2], _suppress=control.suppression_logic)
 
 FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
@@ -1223,63 +1208,25 @@ def on_radio_release_handler():
     was_radio_pressed = False
 
 _glob_mouse_listener: pynput.mouse.Listener = None # type: ignore
-_glob_key_listener: pynput.keyboard.Listener = None # type: ignore
 
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
     bind = Pressable(MouseButton(button.name))
-    if bind in CONTROLS_BY_KEY:
-        control = CONTROLS_BY_KEY[bind]
+    if bind in CONTROLBUTTONS_BY_KEY:
+        control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_mouse():
             control.press() if pressed else control.release()
             if control.should_suppress():
                 _glob_mouse_listener.suppress_event() # type: ignore
 
-def key_press_key_to_string(key: pynput.keyboard.Key | pynput.keyboard.KeyCode | None) -> str:
-    if key is None:
-        return ""
-    if isinstance(key, pynput.keyboard.Key):
-        return key.name
-    if key.char is None:
-        return ""
-    return key.char
-
-_was_synthetic = False
-
-def _key_press_synthetic_filter(msg, data):
-    global _was_synthetic
-    _was_synthetic = bool((data.flags & 0x00000010) > 0)
-
-def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
-    if _was_synthetic:
-        return
-    should_repress = True
-    _glob_key_listener._suppress = True
-    if key_raw is None:
-        return
-    bind = Pressable(KeyButton.from_input(key_raw))
-    if bind in CONTROLS_BY_KEY:
-        control = CONTROLS_BY_KEY[bind]
+def on_key(event: keyboard.KeyboardEvent) -> bool:
+    bind = Pressable(KeyButton(event.scan_code))
+    if bind in CONTROLBUTTONS_BY_KEY:
+        control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_key():
-            control.press()
+            control.press() if event.event_type == "down" else control.release()
             if control.should_suppress():
-                should_repress = False
-    if should_repress:
-        _glob_key_listener._suppress = False
-        controller.press(key_raw)
-        _glob_key_listener._suppress = True
-
-def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
-    if _was_synthetic:
-        return
-    if key_raw is None:
-        return
-    if _glob_key_listener._suppress:
-        controller.release(key_raw)
-    bind = Pressable(KeyButton.from_input(key_raw))
-    if bind in CONTROLS_BY_KEY:
-        control = CONTROLS_BY_KEY[bind]
-        if control.is_key():
-            control.release()
+                return False
+    return True
 
 def mouse_listener():
     global _glob_mouse_listener
@@ -1287,10 +1234,8 @@ def mouse_listener():
         _glob_mouse_listener.join()
 
 def keyboard_listener():
-    global _glob_key_listener
-    with pynput.keyboard.Listener(on_press=on_key_press, on_release=on_key_release, win32_event_filter=_key_press_synthetic_filter) as _glob_key_listener:
-        _glob_key_listener.join()
-
+    keyboard.hook(on_key, suppress=True)
+    
 def skip_model_load(final: Box):
     final.value = True
 
