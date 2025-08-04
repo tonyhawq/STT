@@ -2,7 +2,7 @@
     "input": {
         "activate": "x2",
         "reject": "x1",
-        "radio_modifier": "ctrl_l",
+        "radio_modifier": "ctrl",
         "autosend": true
     },
     "output": {
@@ -10,7 +10,6 @@
         "say_settings": {},
         "chat_settings": {
             "chat_key": "t",
-            "radio_key": "y",
             "chat_delay": 0.75
         },
         "word_replacements": {}
@@ -18,7 +17,7 @@
     "meta": {
         "path_to_model": "model/",
         "verbose": false,
-        "enable_version_checking": false,
+        "enable_version_checking": true,
         "window_width": 300,
         "window_height": 100
     },
@@ -40,6 +39,19 @@
                     "script": "filters/excited.py"
                 }
             ]
+        },
+        "security_radio": {
+            "title": "Sec",
+            "toggle": true,
+            "color": "red",
+            "action": "filters/security.py"
+        },
+        "science_radio": {
+            "title": "Science",
+            "toggle": true,
+            "color": "purple",
+            "text_color": "white",
+            "action": "filters/science.py"
         },
         "rage": {
             "title": "Rage",
