@@ -24,6 +24,7 @@ from tkinter import messagebox
 from enum import Enum
 from huggingface_hub import hf_hub_download
 import traceback
+import pynput.mouse._win32
 
 root = tk.Tk()
 root.title("Speech To Text")
@@ -518,8 +519,9 @@ def _get_vks():
 _get_vks()
 
 class ControlButton:
-    def __init__(self, control: Pressable, action: typing.Callable):
+    def __init__(self, control: Pressable, action: typing.Callable, suppress: bool = False):
         self.control = control
+        self.suppress = suppress
         self._is_pressed = False
         self.actions = [action]
         self.release_actions: list[typing.Callable] = []
@@ -807,7 +809,7 @@ class KeyCombinationControl:
             callbacks[key] = (child_press, child_release)
         return callbacks
 
-def _set_simple_control(control: Pressable, name: str, action: typing.Callable, release: typing.Callable | None = None):
+def _set_simple_control(control: Pressable, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool = False):
     if name in CONTROLS:
         raise RuntimeError(f"Attempted to create duplicate control \"{name}\", a control already exists with this name.")
     if control in CONTROLS_BY_KEY:
@@ -817,24 +819,24 @@ def _set_simple_control(control: Pressable, name: str, action: typing.Callable, 
             control_button.add_release(release)
         CONTROLS[name] = control_button
         return
-    control_button = ControlButton(control, action)
+    control_button = ControlButton(control, action, suppress=_suppress)
     if release is not None:
         control_button.add_release(release)
     CONTROLS_BY_KEY[control] = control_button
     CONTROLS[name] = control_button
 
-def set_control(hotkey: str, name: str, action: typing.Callable, release: typing.Callable | None = None):
+def set_control(hotkey: str, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool = False):
     buttons = Pressable.parse_hotkey(hotkey)
     print(f"making control with hotkey {buttons} and name {name}")
     if len(buttons) < 1:
         raise RuntimeError(f"Invalid hotkey \"{hotkey}\", it contains no values.")
     if len(buttons) == 1:
-        _set_simple_control(buttons[0], name, action, release)
+        _set_simple_control(buttons[0], name, action, release, _suppress=_suppress)
         return
     control = KeyCombinationControl(buttons, press=action, release=(lambda: ...) if release is None else release)
     callbacks = control.to_callbacks()
     for bind, cb in callbacks.items():
-        _set_simple_control(bind, f"{name}@{str(bind)}", cb[0], cb[1])
+        _set_simple_control(bind, f"{name}@{str(bind)}", cb[0], cb[1], _suppress=_suppress)
 
 FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
@@ -847,7 +849,11 @@ def load_settings_from_config():
     verbose = config_get_property(config, ["meta", "verbose"], bool)
     global allow_version_checking
     allow_version_checking = config_get_property(config, ["meta", "enable_version_checking"], bool)
-    set_control(config_get_property(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler)
+    suppress_activate = config_get_optional_property(config, ["input", "activate_globally_blocked"], bool)
+    print(suppress_activate)
+    if suppress_activate is None:
+        suppress_activate = False
+    set_control(config_get_property(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler, _suppress=suppress_activate)
     set_control(config_get_property(config, ["input", "reject"], str), "reject", on_reject_press_handler, release=on_reject_release_handler)
     set_control(config_get_property(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
     global default_width
@@ -1190,6 +1196,9 @@ def on_radio_release_handler():
     global was_radio_pressed
     was_radio_pressed = False
 
+_glob_mouse_listener: pynput.mouse.Listener = None # type: ignore
+_glob_key_listener: pynput.keyboard.Listener = None # type: ignore
+
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
     bind = Pressable(MouseButton(button.name))
     if bind in CONTROLS_BY_KEY:
@@ -1224,18 +1233,62 @@ def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None
         if control.is_key():
             control.release()
 
+def _windows_mouse_event_to_strname(msg: int, data: pynput.mouse._win32.Listener._MSLLHOOKSTRUCT, _mapping: dict[int, tuple[bool, str]] = {
+    pynput.mouse._win32.Listener.WM_LBUTTONDOWN: (True, "lmb"),
+    pynput.mouse._win32.Listener.WM_LBUTTONUP: (False, "lmb"),
+    pynput.mouse._win32.Listener.WM_MBUTTONDOWN: (True, "mmb"),
+    pynput.mouse._win32.Listener.WM_MBUTTONUP: (False, "mmb"),
+    pynput.mouse._win32.Listener.WM_RBUTTONDOWN: (True, "rmb"),
+    pynput.mouse._win32.Listener.WM_RBUTTONUP: (False, "rmb"),
+    pynput.mouse._win32.Listener.WM_XBUTTONDOWN: (True, "x"),
+    pynput.mouse._win32.Listener.WM_XBUTTONUP: (False, "x"),
+}) -> tuple[bool, str] | None:
+    value = _mapping.get(msg, None)
+    if value is None:
+        return
+    if value[1] != "x":
+        return value
+    word = (data.mouseData >> 16) & 0xFFFF
+    if word == 0x0001:
+        return (value[0], "x1")
+    if word == 0x0002:
+        return (value[0], "x2")
+    raise RuntimeError("Got an invalid xbutton.")
+
+def _should_suppress_mouse_input(msg: int, data: pynput.mouse._win32.Listener._MSLLHOOKSTRUCT):
+    if msg == pynput.mouse._win32.Listener.WM_MOUSEMOVE:
+        return
+    event = _windows_mouse_event_to_strname(msg, data)
+    if event is None:
+        return
+    print("got", event)
+    control = CONTROLS_BY_KEY.get(Pressable(MouseButton(event[1])), None)
+    print(control)
+    if control is None:
+        return
+    if control.suppress:
+        _glob_mouse_listener.suppress_event()
+        return
+
+def _should_suppress_keyboard_input():
+    pass
+
 def mouse_listener():
-    with pynput.mouse.Listener(on_click=on_click) as listener:
-        listener.join()
+    global _glob_mouse_listener
+    with pynput.mouse.Listener(on_click=on_click, win32_event_filter=_should_suppress_mouse_input) as _glob_mouse_listener:
+        _glob_mouse_listener.join()
 
 def keyboard_listener():
-    with pynput.keyboard.Listener(on_press=on_key_press, on_release=on_key_release) as listener:
-        listener.join()
+    global _glob_key_listener
+    with pynput.keyboard.Listener(on_press=on_key_press, on_release=on_key_release, win32_event_filter=_should_suppress_keyboard_input) as _glob_key_listener:
+        _glob_key_listener.join()
 
 def skip_model_load(final: Box):
     final.value = True
 
 def load_model(final: Box, can_spin: Box, loading_text: Box):
+    skip_model_load(final)
+    return
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):

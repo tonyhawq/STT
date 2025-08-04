@@ -2,6 +2,7 @@
     "input": {
         "activate": "x2",
         "reject": "x1",
+        "activate_globally_blocked": true,
         "radio_modifier": "ctrl",
         "autosend": true
     },
