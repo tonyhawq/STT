@@ -1243,8 +1243,6 @@ def skip_model_load(final: Box):
     final.value = True
 
 def load_model(final: Box, can_spin: Box, loading_text: Box):
-    skip_model_load(final)
-    return
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):
