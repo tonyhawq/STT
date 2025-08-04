@@ -24,7 +24,6 @@ from tkinter import messagebox
 from enum import Enum
 from huggingface_hub import hf_hub_download
 import traceback
-import pynput.mouse._win32
 
 root = tk.Tk()
 root.title("Speech To Text")
@@ -1244,14 +1243,14 @@ def key_press_key_to_string(key: pynput.keyboard.Key | pynput.keyboard.KeyCode |
         return ""
     return key.char
 
-_next_synthetic_press = False
-_next_synthetic_depress = False
+_was_synthetic = False
+
+def _key_press_synthetic_filter(msg, data):
+    global _was_synthetic
+    _was_synthetic = bool((data.flags & 0x00000010) > 0)
 
 def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
-    global _next_synthetic_press
-    if _next_synthetic_press:
-        _next_synthetic_press = False
-        _glob_key_listener._suppress = True
+    if _was_synthetic:
         return
     should_repress = True
     _glob_key_listener._suppress = True
@@ -1267,27 +1266,20 @@ def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
     if should_repress:
         _glob_key_listener._suppress = False
         controller.press(key_raw)
-        _next_synthetic_press = True
+        _glob_key_listener._suppress = True
 
 def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
-    global _next_synthetic_depress
-    if _next_synthetic_depress:
-        _next_synthetic_depress = False
-        _glob_key_listener._suppress = True
+    if _was_synthetic:
         return
-    should_repress = True
-    _glob_key_listener._suppress = True
     if key_raw is None:
         return
+    if _glob_key_listener._suppress:
+        controller.release(key_raw)
     bind = Pressable(KeyButton.from_input(key_raw))
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
         if control.is_key():
             control.release()
-    if should_repress:
-        _glob_key_listener._suppress = False
-        controller.release(key_raw)
-        _next_synthetic_depress = True
 
 def mouse_listener():
     global _glob_mouse_listener
@@ -1296,7 +1288,7 @@ def mouse_listener():
 
 def keyboard_listener():
     global _glob_key_listener
-    with pynput.keyboard.Listener(on_press=on_key_press, on_release=on_key_release) as _glob_key_listener:
+    with pynput.keyboard.Listener(on_press=on_key_press, on_release=on_key_release, win32_event_filter=_key_press_synthetic_filter) as _glob_key_listener:
         _glob_key_listener.join()
 
 def skip_model_load(final: Box):
