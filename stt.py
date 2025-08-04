@@ -850,7 +850,6 @@ def load_settings_from_config():
     global allow_version_checking
     allow_version_checking = config_get_property(config, ["meta", "enable_version_checking"], bool)
     suppress_activate = config_get_optional_property(config, ["input", "activate_globally_blocked"], bool)
-    print(suppress_activate)
     if suppress_activate is None:
         suppress_activate = False
     set_control(config_get_property(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler, _suppress=suppress_activate)
@@ -1204,7 +1203,7 @@ def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
         if control.suppress:
-            _glob_mouse_listener.suppress_event(control)
+            _glob_mouse_listener.suppress_event() # type: ignore
         if control.is_mouse():
             control.press() if pressed else control.release()
 
@@ -1224,7 +1223,7 @@ def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
         if control.suppress:
-            _glob_key_listener.suppress_event()
+            _glob_key_listener.suppress_event() # type: ignore
         if control.is_key():
             control.press()
 
