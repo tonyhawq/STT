@@ -417,6 +417,31 @@ class Pressable:
         getattr(pynput.mouse.Button, val)
         return val
 
+    _special_name_to_scancode: dict[str, tuple[int, ...]] = {
+        'numpad 0': (82,),
+        'numpad 1': (79,),
+        'numpad 2': (80,),
+        'numpad 3': (81,),
+        'numpad 4': (75,),
+        'numpad 5': (76,),
+        'numpad 6': (77,),
+        'numpad 7': (71,),
+        'numpad 8': (72,),
+        'numpad 9': (73,),
+    }
+
+    @staticmethod
+    def _str_to_scancode(val: str) -> tuple[int, ...]:
+        val = val.strip()
+        if val.startswith('<') and val.endswith('>'):
+            try:
+                return (int(val.removeprefix('<').removesuffix('>')),)
+            except ValueError as e:
+                raise RuntimeError(f"Invalid scancode {val}, expected number inside of angle brackets, got {val.removeprefix('<').removesuffix('>')}.") from e
+        if val in Pressable._special_name_to_scancode:
+            return Pressable._special_name_to_scancode[val]
+        return keyboard.key_to_scan_codes(val)
+
     @staticmethod
     def parse_hotkey(hotkey: str) -> "list[list[Pressable]]":
         # allows ctrl + p + x
@@ -424,7 +449,7 @@ class Pressable:
         pressables: list[list[Pressable]] = []
         for value in values:
             try:
-                codes = keyboard.key_to_scan_codes(value)
+                codes = Pressable._str_to_scancode(value)
                 aliases = []
                 for scancode in codes:
                     aliases.append(Pressable(KeyButton(scancode)))
@@ -447,28 +472,6 @@ class Pressable:
     
     def is_keyboard(self):
         return self.control.is_keyboard()
-    
-def _get_vks():
-    shitty_hardcoded_windows = {
-        'numpad 0': 0x60,
-        'numpad 1': 0x61,
-        'numpad 2': 0x62,
-        'numpad 3': 0x63,
-        'numpad 4': 0x64,
-        'numpad 5': 0x65,
-        'numpad 6': 0x66,
-        'numpad 7': 0x67,
-        'numpad 8': 0x68,
-        'numpad 9': 0x69,
-        'numpad star': 0x6A,
-        'numpad plus': 0x6B,
-        'numpad sep': 0x6C,
-        'numpad dash': 0x6D,
-        'numpad dec': 0x6E,
-        'numpad slash': 0x6F,
-    }
-
-_get_vks()
 
 class ControlButton:
     def __init__(self, control: Pressable, action: typing.Callable, suppression_logic: typing.Callable[[], bool] | bool = False):

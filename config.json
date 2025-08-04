@@ -54,7 +54,7 @@
             "toggle": true,
             "color": "purple",
             "text_color": "white",
-            "key_combination": "unset",
+            "key_combination": "numpad 0",
             "action": "filters/science.py"
         },
         "rage": {
