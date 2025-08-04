@@ -71,26 +71,30 @@ def exception_to_filtered_traceback(e: Exception, context: str | None = None) ->
     if not context is None:
         filtered.append(f"Context for exception {type(e).__name__}: {e}:")
         filtered.append(context)
-    filtered.append(f"Traceback for exception {type(e).__name__}: {e} (most recent call first):")
+    filtered.append(f"Traceback for exception {type(e).__name__}: {e} (most recent call last):")
     cause = e
+    indent = -1
     while not (cause is None):
-        filtered.append(filtered_traceback(cause.__traceback__))
-        filtered.append(f"{type(cause).__name__}: {cause}")
+        indent = indent + 1
+        filtered.append(filtered_traceback(cause.__traceback__, indent=indent))
         if not cause.__cause__ is None:
             cause = cause.__cause__
-            filtered.append(f"The above exception was the direct cause of the following:")
-            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call first):")
+            filtered.append(f"The above exception was directly caused by the following:")
+            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call last):")
         elif not (cause.__context__ is None) and not cause.__suppress_context__:
             cause = cause.__context__
             filtered.append(f"During handling of the above exception, another exception occurred:")
-            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call first):")
+            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call last):")
         else:
             cause = None
     return '\n'.join(filtered)
     
 
-def filtered_traceback(parent_frame: types.TracebackType | None = None) -> str:
+def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: int|None = None) -> str:
     stack: traceback.StackSummary
+    if indent is None:
+        indent = 0
+    indent_str = "  " * indent
     if parent_frame is None:
         stack = traceback.extract_stack()
     else:
@@ -104,14 +108,16 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None) -> str:
             if was_filtered:
                 filtered += " -> "
             else:
+                filtered += indent_str
                 filtered += "In "
             filtered += frame.name
             was_filtered = True
         else:
             if was_filtered:
                 filtered += " ->\n"
-            filtered += f"File {frame.filename}, line {frame.lineno}, in {frame.name}\n  {frame.line}\n"
+            filtered += f"{indent_str}{frame.name} in file {frame.filename}, line {frame.lineno}\n  {frame.line}\n"
             was_filtered = False
+    filtered = filtered.removesuffix('\n') + '\n'
     return filtered
 
 def spawn_thread(func: typing.Callable, args: list = []):
@@ -1011,7 +1017,7 @@ def colorize(val: str, time: float):
         obj.config(bg="white")
     background.config_and_apply(bg=val)(_recolor, time)
 
-blockable_keys = ['w', 'a', 's', 'd', 'alt', 'space']
+blockable_keys = ['w', 'a', 's', 'd', 'f', 'e', 'x', 'alt', 'space']
 pressed_keys = {}
 
 def key_filter(event: keyboard.KeyboardEvent):
@@ -1230,8 +1236,6 @@ def skip_model_load(final: Box):
     final.value = True
 
 def load_model(final: Box, can_spin: Box, loading_text: Box):
-    skip_model_load(final)
-    return
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):
