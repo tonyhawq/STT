@@ -867,7 +867,7 @@ def submit():
         radio = IS_RADIO
         if radio:
             label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
-            transcript = transcript + "; "
+            transcript = "; " + transcript
         if use_say:
             submit_say(perform_transformations(transcript))
         else:
