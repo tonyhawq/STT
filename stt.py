@@ -896,7 +896,7 @@ def load_settings_from_config():
                     filter_to_apply = config_get_property(action, ["name"], str)
                     parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
         activation = None
-        if config_has_property(filter, ["key_combination"], str):
+        if config_has_property(filter, ["key_combination"], str) and config_get_property(filter, ["key_combination"], str).lower() != "unset":
             activation = FilterActivation(config_get_property(filter, ["key_combination"], str), config_get_property(filter, ["toggle"], bool))
         Filter(name, title, FILTERS, parsed_actions, activation,
                background=config_get_optional_property(filter, ["color"], str),

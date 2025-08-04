@@ -44,6 +44,7 @@
             "title": "Sec",
             "toggle": true,
             "color": "red",
+            "key_combination": "unset",
             "action": "filters/security.py"
         },
         "science_radio": {
@@ -51,6 +52,7 @@
             "toggle": true,
             "color": "purple",
             "text_color": "white",
+            "key_combination": "unset",
             "action": "filters/science.py"
         },
         "rage": {
