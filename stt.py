@@ -1203,6 +1203,8 @@ def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
     bind = Pressable(MouseButton(button.name))
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
+        if control.suppress:
+            _glob_mouse_listener.suppress_event(control)
         if control.is_mouse():
             control.press() if pressed else control.release()
 
@@ -1221,6 +1223,8 @@ def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
     bind = Pressable(KeyButton.from_input(key_raw))
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
+        if control.suppress:
+            _glob_key_listener.suppress_event()
         if control.is_key():
             control.press()
 
@@ -1233,54 +1237,14 @@ def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None
         if control.is_key():
             control.release()
 
-def _windows_mouse_event_to_strname(msg: int, data: pynput.mouse._win32.Listener._MSLLHOOKSTRUCT, _mapping: dict[int, tuple[bool, str]] = {
-    pynput.mouse._win32.Listener.WM_LBUTTONDOWN: (True, "lmb"),
-    pynput.mouse._win32.Listener.WM_LBUTTONUP: (False, "lmb"),
-    pynput.mouse._win32.Listener.WM_MBUTTONDOWN: (True, "mmb"),
-    pynput.mouse._win32.Listener.WM_MBUTTONUP: (False, "mmb"),
-    pynput.mouse._win32.Listener.WM_RBUTTONDOWN: (True, "rmb"),
-    pynput.mouse._win32.Listener.WM_RBUTTONUP: (False, "rmb"),
-    pynput.mouse._win32.Listener.WM_XBUTTONDOWN: (True, "x"),
-    pynput.mouse._win32.Listener.WM_XBUTTONUP: (False, "x"),
-}) -> tuple[bool, str] | None:
-    value = _mapping.get(msg, None)
-    if value is None:
-        return
-    if value[1] != "x":
-        return value
-    word = (data.mouseData >> 16) & 0xFFFF
-    if word == 0x0001:
-        return (value[0], "x1")
-    if word == 0x0002:
-        return (value[0], "x2")
-    raise RuntimeError("Got an invalid xbutton.")
-
-def _should_suppress_mouse_input(msg: int, data: pynput.mouse._win32.Listener._MSLLHOOKSTRUCT):
-    if msg == pynput.mouse._win32.Listener.WM_MOUSEMOVE:
-        return
-    event = _windows_mouse_event_to_strname(msg, data)
-    if event is None:
-        return
-    print("got", event)
-    control = CONTROLS_BY_KEY.get(Pressable(MouseButton(event[1])), None)
-    print(control)
-    if control is None:
-        return
-    if control.suppress:
-        _glob_mouse_listener.suppress_event()
-        return
-
-def _should_suppress_keyboard_input():
-    pass
-
 def mouse_listener():
     global _glob_mouse_listener
-    with pynput.mouse.Listener(on_click=on_click, win32_event_filter=_should_suppress_mouse_input) as _glob_mouse_listener:
+    with pynput.mouse.Listener(on_click=on_click) as _glob_mouse_listener:
         _glob_mouse_listener.join()
 
 def keyboard_listener():
     global _glob_key_listener
-    with pynput.keyboard.Listener(on_press=on_key_press, on_release=on_key_release, win32_event_filter=_should_suppress_keyboard_input) as _glob_key_listener:
+    with pynput.keyboard.Listener(on_press=on_key_press, on_release=on_key_release) as _glob_key_listener:
         _glob_key_listener.join()
 
 def skip_model_load(final: Box):
