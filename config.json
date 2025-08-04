@@ -45,7 +45,8 @@
             "title": "Sec",
             "toggle": true,
             "color": "red",
-            "key_combination": "unset",
+            "suppress": true,
+            "key_combination": "ctrl+u",
             "action": "filters/security.py"
         },
         "science_radio": {

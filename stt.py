@@ -218,9 +218,10 @@ class InceptionAction(ApplyableAction):
         return input
 
 class FilterActivation:
-    def __init__(self, keybind: str, toggle: bool):
+    def __init__(self, keybind: str, toggle: bool, suppresses: bool | None = None):
         self.keybind = keybind
         self.toggle = toggle
+        self.suppresses = suppresses if suppresses is not None else False
 
 class Filter:
     def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation | None, background: str|None="green", text_color: str|None="black"):
@@ -519,9 +520,14 @@ def _get_vks():
 _get_vks()
 
 class ControlButton:
-    def __init__(self, control: Pressable, action: typing.Callable, suppress: bool = False):
+    def __init__(self, control: Pressable, action: typing.Callable, suppression_logic: typing.Callable[[], bool] | bool = False):
         self.control = control
-        self.suppress = suppress
+        if isinstance(suppression_logic, bool):
+            def should_suppress():
+                return suppression_logic
+            self.should_suppress = should_suppress
+        else:
+            self.should_suppress = suppression_logic
         self._is_pressed = False
         self.actions = [action]
         self.release_actions: list[typing.Callable] = []
@@ -777,13 +783,19 @@ def config_get_optional_property(obj: ConfigObject, names: list[str], expected_t
         return None
 
 class KeyCombinationControl:
-    def __init__(self, bind: "list[Pressable]", press: typing.Callable, release: typing.Callable):
+    def __init__(self, bind: "list[Pressable]", press: typing.Callable, release: typing.Callable, _suppress: bool = False):
         self.keys = bind
         self.press_action = press
         self.release_action = release
         self._currently_pressed: dict[Pressable, None] = {}
         self._pressed_count = 0
         self._press_threshold = len(bind)
+        self.suppression_logic: bool | typing.Callable[[], bool] = _suppress
+        if _suppress:
+            def should_suppress():
+                print("should suppress", self._pressed_count == self._press_threshold)
+                return self._pressed_count == self._press_threshold
+            self.suppression_logic = should_suppress
 
     def _check_press(self):
         if self._pressed_count == self._press_threshold:
@@ -803,23 +815,37 @@ class KeyCombinationControl:
                 self._pressed_count += 1
                 self._check_press()
             def child_release(k=key):
+                print("release")
                 if self._currently_pressed.pop(k, True) is None:
                     self._check_depress()
                     self._pressed_count -= 1
             callbacks[key] = (child_press, child_release)
         return callbacks
 
-def _set_simple_control(control: Pressable, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool = False):
+def _literal_true():
+    return True
+
+def _set_simple_control(control: Pressable, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool | typing.Callable[[], bool] = False):
     if name in CONTROLS:
         raise RuntimeError(f"Attempted to create duplicate control \"{name}\", a control already exists with this name.")
     if control in CONTROLS_BY_KEY:
         control_button = CONTROLS_BY_KEY[control]
         control_button.add_press(action)
+        if isinstance(_suppress, bool):
+            if _suppress:
+                # if should suppress just this keybind, then it will always suppress
+                # if not, it doesn't matter because other keybinds might want to suppress
+                control_button.should_suppress = _literal_true
+        else:
+            def suppression_wrapper(func=_suppress, last_func=control_button.should_suppress):
+                print("testing suppression")
+                return func() or last_func()
+            control_button.should_suppress = suppression_wrapper
         if release is not None:
             control_button.add_release(release)
         CONTROLS[name] = control_button
         return
-    control_button = ControlButton(control, action, suppress=_suppress)
+    control_button = ControlButton(control, action, suppression_logic=_suppress)
     if release is not None:
         control_button.add_release(release)
     CONTROLS_BY_KEY[control] = control_button
@@ -833,10 +859,10 @@ def set_control(hotkey: str, name: str, action: typing.Callable, release: typing
     if len(buttons) == 1:
         _set_simple_control(buttons[0], name, action, release, _suppress=_suppress)
         return
-    control = KeyCombinationControl(buttons, press=action, release=(lambda: ...) if release is None else release)
+    control = KeyCombinationControl(buttons, press=action, release=(lambda: ...) if release is None else release, _suppress=_suppress)
     callbacks = control.to_callbacks()
     for bind, cb in callbacks.items():
-        _set_simple_control(bind, f"{name}@{str(bind)}", cb[0], cb[1], _suppress=_suppress)
+        _set_simple_control(bind, f"{name}@{str(bind)}", cb[0], cb[1], _suppress=control.suppression_logic)
 
 FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
@@ -902,7 +928,9 @@ def load_settings_from_config():
                     parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
         activation = None
         if config_has_property(filter, ["key_combination"], str) and config_get_property(filter, ["key_combination"], str).lower() != "unset":
-            activation = FilterActivation(config_get_property(filter, ["key_combination"], str), config_get_property(filter, ["toggle"], bool))
+            activation = FilterActivation(config_get_property(filter, ["key_combination"], str),
+                                          config_get_property(filter, ["toggle"], bool), 
+                                          config_get_optional_property(filter, ["suppress"], bool))
         Filter(name, title, FILTERS, parsed_actions, activation,
                background=config_get_optional_property(filter, ["color"], str),
                text_color=config_get_optional_property(filter, ["text_color"], str))
@@ -1202,10 +1230,10 @@ def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
     bind = Pressable(MouseButton(button.name))
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
-        if control.suppress:
-            _glob_mouse_listener.suppress_event() # type: ignore
         if control.is_mouse():
             control.press() if pressed else control.release()
+            if control.should_suppress():
+                _glob_mouse_listener.suppress_event() # type: ignore
 
 def key_press_key_to_string(key: pynput.keyboard.Key | pynput.keyboard.KeyCode | None) -> str:
     if key is None:
@@ -1216,18 +1244,39 @@ def key_press_key_to_string(key: pynput.keyboard.Key | pynput.keyboard.KeyCode |
         return ""
     return key.char
 
+_next_synthetic_press = False
+_next_synthetic_depress = False
+
 def on_key_press(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
+    global _next_synthetic_press
+    if _next_synthetic_press:
+        _next_synthetic_press = False
+        _glob_key_listener._suppress = True
+        return
+    should_repress = True
+    _glob_key_listener._suppress = True
     if key_raw is None:
         return
     bind = Pressable(KeyButton.from_input(key_raw))
     if bind in CONTROLS_BY_KEY:
         control = CONTROLS_BY_KEY[bind]
-        if control.suppress:
-            _glob_key_listener.suppress_event() # type: ignore
         if control.is_key():
             control.press()
+            if control.should_suppress():
+                should_repress = False
+    if should_repress:
+        _glob_key_listener._suppress = False
+        controller.press(key_raw)
+        _next_synthetic_press = True
 
 def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None):
+    global _next_synthetic_depress
+    if _next_synthetic_depress:
+        _next_synthetic_depress = False
+        _glob_key_listener._suppress = True
+        return
+    should_repress = True
+    _glob_key_listener._suppress = True
     if key_raw is None:
         return
     bind = Pressable(KeyButton.from_input(key_raw))
@@ -1235,6 +1284,10 @@ def on_key_release(key_raw: pynput.keyboard.Key | pynput.keyboard.KeyCode | None
         control = CONTROLS_BY_KEY[bind]
         if control.is_key():
             control.release()
+    if should_repress:
+        _glob_key_listener._suppress = False
+        controller.release(key_raw)
+        _next_synthetic_depress = True
 
 def mouse_listener():
     global _glob_mouse_listener
@@ -1363,7 +1416,11 @@ def init():
         if registered_filter.activation_details is None:
             continue
         callback = FilterActivationCallback(registered_filter)
-        set_control(registered_filter.activation_details.keybind, registered_filter.name + ".keybind", callback.on_press, callback.on_release)
+        set_control(registered_filter.activation_details.keybind,
+                    registered_filter.name + ".keybind",
+                    callback.on_press,
+                    callback.on_release,
+                    _suppress=registered_filter.activation_details.suppresses)
     spawn_thread(mouse_listener)
     spawn_thread(keyboard_listener)
 
