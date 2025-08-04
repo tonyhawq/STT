@@ -1,2 +1,2 @@
 def process(input: str) -> str:
-    return ":n " + input.removeprefix(";")
+    return ":n " + input.removeprefix("; ")
