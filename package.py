@@ -42,6 +42,7 @@ def is_ignored(file_path: Path, ignored_dirs: list[Packageable]) -> bool:
 
 def package_files(files: list[Packageable], zip_path: Path):
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        zipf.writestr(zinfo_or_arcname="version.number", data=version)
         for pkg in files:
             if pkg._is_dir:
                 base_path = Path(pkg.path()).resolve()

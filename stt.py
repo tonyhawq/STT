@@ -863,6 +863,7 @@ def submit():
     if "alt" in pressed_keys:
         controller.release(pynput.keyboard.Key.alt_l)
     hook = keyboard.hook(key_filter, True)
+    global IS_RADIO
     try:
         radio = IS_RADIO
         if radio:
@@ -881,6 +882,8 @@ def submit():
             keyboard.press(key)
         else:
             keyboard.release(key)
+    IS_RADIO = False
+    set_radio_colors()
 
 def reject():
     global state
