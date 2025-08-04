@@ -17,7 +17,7 @@
     "meta": {
         "path_to_model": "model/",
         "verbose": false,
-        "enable_version_checking": false,
+        "enable_version_checking": true,
         "window_width": 300,
         "window_height": 100
     },
