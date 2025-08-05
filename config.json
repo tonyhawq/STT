@@ -46,7 +46,7 @@
             "toggle": true,
             "color": "red",
             "suppress": true,
-            "key_combination": "unset",
+            "key_combination": "numpad 1",
             "action": "filters/security.py"
         },
         "science_radio": {
@@ -54,7 +54,8 @@
             "toggle": true,
             "color": "purple",
             "text_color": "white",
-            "key_combination": "unset",
+            "suppress": true,
+            "key_combination": "numpad 4",
             "action": "filters/science.py"
         },
         "rage": {
