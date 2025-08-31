@@ -689,10 +689,11 @@ class Changelog:
         self.headline = headline
         self.categories = categories
     
+    @staticmethod
     @main_thread()
-    def show(self):
+    def show_logs(logs: list["Changelog"]):
         window = tk.Toplevel()
-        window.title(f"Changelog for {self.name}")
+        window.title(f"Changelog")
         window.geometry(f"600x900+{window.winfo_screenwidth() // 2 - 600 // 2}+{window.winfo_screenheight() // 2 - 900 // 2}")
         text = tk.Text(window, wrap="word")
         text.pack(side="left", fill="both", expand=True)
@@ -701,23 +702,31 @@ class Changelog:
         text.config(yscrollcommand=scrollbar.set)
         text.tag_configure("header", font=("TkDefaultFont", 20, "bold"))
         text.tag_configure("bold", font=("TkDefaultFont", 15, "bold"))
-        text.insert("1.0", f"Version: {self.version}\n", "header")
-        text.insert("2.0", f"Date: {self.date}\n")
-        text.insert("3.0", "Headline:\n", "header")
-        text.insert("4.0", f"{self.headline}\n", "bold")
-        line = 5
-        if self.critical_updates is not None:
-            text.insert("5.0", "Critical updates:\n", "bold")
-            line = line + 1
-            for update in self.critical_updates:
-                text.insert(f"{line}.0", f"  - {update}\n")
+        line = 1
+        for log in logs:
+            if line != 1:
+                text.insert(f"{line}.0", "-" * 15)
                 line = line + 1
-        for name, bullets in self.categories.items():
-            text.insert(f"{line}.0", f"{name}:\n", "bold")
+            text.insert(f"{line}.0", f"Version: {log.version}\n", "header")
             line = line + 1
-            for bullet in bullets:
-                text.insert(f"{line}.0", f"  - {bullet}\n")
+            text.insert(f"{line}.0", f"Date: {log.date}\n")
+            line = line + 1
+            text.insert(f"{line}.0", "Headline:\n", "header")
+            line = line + 1
+            text.insert(f"{line}.0", f"{log.headline}\n", "bold")
+            line = line + 1
+            if log.critical_updates is not None:
+                text.insert("5.0", "Critical updates:\n", "bold")
                 line = line + 1
+                for update in log.critical_updates:
+                    text.insert(f"{line}.0", f"  - {update}\n")
+                    line = line + 1
+            for name, bullets in log.categories.items():
+                text.insert(f"{line}.0", f"{name}:\n", "bold")
+                line = line + 1
+                for bullet in bullets:
+                    text.insert(f"{line}.0", f"  - {bullet}\n")
+                    line = line + 1
         text.config(state="disabled")
         
     @staticmethod
@@ -742,11 +751,30 @@ class Changelog:
         critical_updates = categories.pop("Critical", None)
         return Changelog(version=version, date=str(re.findall(r"Date: (.*?)\n", input[index:header_idx])[0]), name=name, headline=headline, critical_updates=critical_updates, categories=categories)
 
-def show_version_info(text: str, changelog: Changelog):
+def show_changelogs_after(current: str):
+    url = "https://api.github.com/repos/tonyhawq/STT/releases"
+    response = requests.get(url, timeout=5)
+    releases = response.json()
+    logs = []
+    for release in releases:
+        version = release['tag_name']
+        if not version_greater(version, current):
+            continue
+        for asset in release.get("assets", []):
+            if asset["name"] == "changelog.txt":
+                changelog_url = asset["browser_download_url"]
+                try:
+                    raw_log = requests.get(changelog_url).text
+                    logs.append(Changelog.parse(raw_log, version))
+                except Exception as e:
+                    print(e)
+    Changelog.show_logs(logs)
+
+def show_version_info(text: str, changelog: Changelog, version: str):
     res = messagebox.showinfo("New Version Available", text, type=messagebox.OKCANCEL) #type: ignore
     if res == messagebox.OK:
-        changelog.show()
-
+        show_changelogs_after(version)
+        
 def fetch_changelog() -> Changelog:
     url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
     response = requests.get(url, timeout=1).json()
@@ -1572,7 +1600,7 @@ def init():
                 text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file.\nPress OK to view the changelog."
                 if changelog.critical_updates is not None:
                     text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config.ini file."
-                spawn_thread(show_version_info, [text, changelog])
+                spawn_thread(show_version_info, [text, changelog, current])
         except Exception as e:
             spawn_thread(messagebox.showerror, ["An error has occurred", f"Encountered {type(e).__name__} {e} while checking version."])
     spawn_thread(load_model, args=[loading_finished, can_spin, loading_text])
