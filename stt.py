@@ -145,6 +145,31 @@ def spawn_thread(func: typing.Callable, args: list = []):
     thread = threading.Thread(target=_thread_ctx, args=(func, stack, args), daemon=True)
     thread.start()
 
+def main_thread():
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if threading.current_thread() is threading.main_thread():
+                return func(*args, **kwargs)
+            result = Box[typing.Any](None)
+            error = Box[Exception | None](None)
+            event = threading.Event()
+            def sync():
+                try:
+                    result.value = func(*args, **kwargs)
+                except Exception as e:
+                    error.value = e
+                finally:
+                    event.set()
+            root.after(0, sync)
+            event.wait()
+            if error.has_value():
+                raise error.value # type: ignore
+            else:
+                return result.value
+        return wrapper
+    return decorator
+
 class Configurable():
     def __init__(self, obj):
         self.obj = obj
@@ -153,6 +178,7 @@ class Configurable():
     def dirtied_by(self):
         return self.m_dirtied_by
     
+    @main_thread()
     def config(self, **kwargs):
         self.obj.config(**kwargs) # type: ignore
         self.m_dirtied_by = time.time()
@@ -276,32 +302,7 @@ class Filter:
 
     def __str__(self):
         return "Filter." + self.name
-
-def main_thread():
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            if threading.current_thread() is threading.main_thread():
-                return func(*args, **kwargs)
-            result = Box[typing.Any](None)
-            error = Box[Exception | None](None)
-            event = threading.Event()
-            def sync():
-                try:
-                    result.value = func(*args, **kwargs)
-                except Exception as e:
-                    error.value = e
-                finally:
-                    event.set()
-            root.after(0, sync)
-            event.wait()
-            if error.has_value():
-                raise error.value # type: ignore
-            else:
-                return result.value
-        return wrapper
-    return decorator
-
+    
 @main_thread()
 def set_window_geometry(width, height):
     root.update_idletasks()
@@ -1187,9 +1188,12 @@ def _finalize_process():
     verbose_print("Finalizing.")
     global state
     with STATUS_LOCK:
+        label_background.config(bg="white")
         global STOP_RECORDING
         global CANCEL_PROCESS
         state = State.READY
+        if CANCEL_PROCESS:
+            colorize("red", 1)
         STOP_RECORDING = False
         CANCEL_PROCESS = False
         if not (RECORDING_STREAM is None):
@@ -1371,14 +1375,14 @@ def reject():
         with STATUS_LOCK:
             STOP_RECORDING = True
             CANCEL_PROCESS = True
-        return
-    if state == State.ACCEPTING:
+    elif state == State.ACCEPTING:
         _finalize_process()
         colorize("red", 1)
-        return
-    if state == State.PROCESSING:
+    elif state == State.PROCESSING:
         with STATUS_LOCK:
             CANCEL_PROCESS = True
+    else:
+        pass
 
 def on_activate_press_handler():
     with STATUS_LOCK:
@@ -1421,9 +1425,9 @@ def on_reject_release_handler():
 
 def set_radio_colors():
     if IS_RADIO:
-        label.config(bg="light blue")
+        label_background.config(bg="light blue")
     else:
-        label.config(bg="white") 
+        label_background.config(bg="white")
 
 was_radio_pressed = False
 
