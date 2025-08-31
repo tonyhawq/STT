@@ -15,7 +15,7 @@ import io
 import re
 import requests
 import uuid
-import ctypes
+import functools
 import math
 import types
 import importlib.util
@@ -24,6 +24,10 @@ from tkinter import messagebox
 from enum import Enum
 from huggingface_hub import hf_hub_download
 import traceback
+
+T = typing.TypeVar('T')
+U = typing.TypeVar('U')
+V = typing.TypeVar('V')
 
 root = tk.Tk()
 root.title("Speech To Text")
@@ -34,6 +38,7 @@ label.pack(expand=True)
 default_width = 300
 default_height = 100
 
+_skip_model_loading = False
 thread_context = threading.local()
 verbose = False
 
@@ -168,7 +173,7 @@ class ApplyableAction:
     def __repr__(self):
         return "ApplyableAction." + self.name
 
-    def on_enable(self):
+    def on_enable(self, source: "Filter"):
         pass
 
     def on_disable(self):
@@ -203,7 +208,7 @@ class InceptionAction(ApplyableAction):
         self.action = InceptionAction.noop
         self.filter = filter_to_apply
     
-    def on_enable(self):
+    def on_enable(self, source: "Filter"):
         self.manager.enable_filter(self.filter, self.name)
 
     def on_disable(self):
@@ -216,6 +221,17 @@ class InceptionAction(ApplyableAction):
     def noop(input):
         return input
 
+class SelfishAction(InceptionAction):
+    def __init__(self, manager: "FilterManager", filter_to_apply: str):
+        super().__init__(manager, filter_to_apply)
+    
+    def on_enable(self, source: "Filter"):
+        self.manager.disable_filter(self.filter, self.name)
+        self.manager.force_disable_filter(self.filter)
+    
+    def __repr__(self):
+        return "SelifshAction." + self.name
+
 class FilterActivation:
     def __init__(self, keybind: str, toggle: bool, suppresses: bool | None = None):
         self.keybind = keybind
@@ -223,10 +239,12 @@ class FilterActivation:
         self.suppresses = suppresses if suppresses is not None else False
 
 class Filter:
-    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], activated_by: FilterActivation | None, background: str|None="green", text_color: str|None="black"):
+    def __init__(self, name: str, title: str, manager: "FilterManager", actions: list[ApplyableAction], group: str, exclusive: bool, activated_by: FilterActivation | None, background: str|None="green", text_color: str|None="black"):
         self.background = "green" if background is None else background
         self.text_color = "black" if text_color is None else text_color
         self.name = name
+        self.group = group
+        self.exclusive = exclusive
         self.title = title
         self.manager = manager
         self.actions = actions
@@ -234,9 +252,54 @@ class Filter:
         self.enabled_by: dict[str, bool] = {}
         self.manager.register(self)
         self.display: ttk.Label | None = None
-        
+    
+    def on_enable(self):
+        to_delete = []
+        for name, filter in self.manager.enabled_filters.items():
+            if (filter is not self) and filter.group == self.group:
+                to_delete.append(name)
+        for name in to_delete:
+            self.manager.force_disable_filter(name)
+
+    def on_disable(self):
+        pass
+
     def __str__(self):
         return "Filter." + self.name
+
+def main_thread():
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if threading.current_thread() is threading.main_thread():
+                return func(*args, **kwargs)
+            result = Box[typing.Any](None)
+            error = Box[Exception | None](None)
+            event = threading.Event()
+            def sync():
+                try:
+                    result.value = func(*args, **kwargs)
+                except Exception as e:
+                    error.value = e
+                finally:
+                    event.set()
+            root.after(0, sync)
+            event.wait()
+            if error.has_value():
+                raise error.value # type: ignore
+            else:
+                return result.value
+        return wrapper
+    return decorator
+
+@main_thread()
+def set_window_geometry(width, height):
+    root.update_idletasks()
+    if width is None:
+        width = root.winfo_width()
+    if height is None:
+        height = root.winfo_height()
+    root.geometry(f"{math.floor(width)}x{math.floor(height)}")
 
 class ExpandableColumnFlow:
     def __init__(self, parent, columns):
@@ -248,9 +311,11 @@ class ExpandableColumnFlow:
         self.columns = columns
         self.flat = []
 
+    @main_thread()
     def get_height(self):
-        return self.grid.winfo_reqheight() if len(self.flat) > 0 else 0
+        return math.floor(len(self.flat) / self.columns) * 25
 
+    @main_thread()
     def delete_button(self, widget: ttk.Label):
         index: int | None = None
         height_before = self.get_height()
@@ -265,8 +330,9 @@ class ExpandableColumnFlow:
             to_move = self.flat[i]
             to_move.grid(row=math.floor(i / self.columns), column=i % self.columns)
         height_after = self.get_height()
-        root.geometry(f"{root.winfo_width()}x{root.winfo_height() - height_before + height_after}")
-
+        set_window_geometry(None, root.winfo_height() - height_before + height_after)
+        
+    @main_thread()
     def add_button(self):
         height_before = self.get_height()
         widget = ttk.Label(self.grid, anchor="center")
@@ -274,7 +340,7 @@ class ExpandableColumnFlow:
         widget.config(background="green")
         self.flat.append(widget)
         height_after = self.get_height()
-        root.geometry(f"{root.winfo_width()}x{root.winfo_height() - height_before + height_after}")
+        set_window_geometry(None, root.winfo_height() - height_before + height_after)
         return widget
 
 DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)
@@ -303,6 +369,7 @@ class FilterManager:
             raise RuntimeError(f"Attempted to enable filter {name} while {name} does not exist.")
         filter = self.registered_filters[name]
         if len(filter.enabled_by) == 0:
+            filter.on_enable()
             filter.display = self.display.add_button()
             filter.display.config(text=filter.title, background=filter.background, foreground=filter.text_color)
         filter.enabled_by[source] = True
@@ -317,9 +384,10 @@ class FilterManager:
         if len(filter.enabled_by) == 0:
             return
         filter.enabled_by.pop(source, None)
-        self.enabled_filters.pop(filter.name, None)
         if len(filter.enabled_by) > 0:
             return
+        filter.on_disable()
+        self.enabled_filters.pop(filter.name, None)
         if not (filter.display is None):
             self.display.delete_button(filter.display)
             filter.display = None
@@ -331,7 +399,7 @@ class FilterManager:
         if action.name in self.enabled_actions:
             return
         self.enabled_actions[action.name] = action
-        action.on_enable()
+        action.on_enable(source)
     
     def disable_action(self, action: ApplyableAction, source: Filter):
         action.enabled_by.pop(source.name, None)
@@ -339,6 +407,16 @@ class FilterManager:
             self.enabled_actions.pop(action.name, None)
             action.on_disable()
     
+    def force_disable_filter(self, name: str):
+        filter = self.registered_filters[name]
+        filter.enabled_by = {"FilterManager.force": True}
+        self.disable_filter(name, "FilterManager.force")
+        
+    def force_disable_action(self, action: ApplyableAction):
+        action.enabled_by.clear()
+        self.enabled_actions.pop(action.name, None)
+        action.on_disable()
+
     def transform_input(self, input: str) -> str:
         for action in self.enabled_actions.values():
             input = action.transform(input)
@@ -351,9 +429,12 @@ audio = pyaudio.PyAudio()
 path_to_model = ""
 asr_model = None
 
-class Box:
-    def __init__(self, value):
-        self.value = value
+class Box(typing.Generic[T]):
+    def __init__(self, value: T):
+        self.value: T = value
+
+    def has_value(self):
+        return self.value is not None
 
 class MouseButton:
     def __init__(self, button: str):
@@ -611,10 +692,6 @@ CONTROLS: dict[str, Control] = {}
 CONTROLBUTTONS_BY_KEY: dict[Pressable, ControlButton] = {}
 WORD_REPLACEMENTS: dict[str, str] = {}
 
-T = typing.TypeVar('T')
-U = typing.TypeVar('U')
-V = typing.TypeVar('V')
-
 class ConfigError(Exception):
     def __init__(self, message):
         super().__init__(message)
@@ -760,11 +837,19 @@ def config_has_property(obj: ConfigObject, names: list[str], expected_type: typi
     except:
         return False
 
-def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> T|None:
+@typing.overload
+def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: None = None) -> None:
+    ...
+
+@typing.overload
+def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: T) -> T:
+    ...
+
+def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: T | None = None) -> T|None:
     try:
         return config_get_property(obj, names, expected_type)
-    except:
-        return None
+    except Exception:
+        return option
 
 class KeyCombinationControl:
     def __init__(self, bind: "list[list[Pressable]]", press: typing.Callable, release: typing.Callable, _suppress: bool = False):
@@ -870,6 +955,8 @@ def load_settings_from_config():
     set_control(config_get_property(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
     global default_width
     global default_height
+    global _skip_model_loading
+    _skip_model_loading = config_get_property(config, ["skip_model_load"], bool) if config_has_property(config, ["skip_model_load"], bool) else False
     default_width = config_get_property(config, ["meta", "window_width"], int)
     default_height = config_get_property(config, ["meta", "window_height"], int)
     root.geometry(str(int(default_width)) + "x" + str(int(default_height)))
@@ -912,13 +999,22 @@ def load_settings_from_config():
                     parsed_actions.append(TransformAction(FILTERS, filename))
                 elif type == "filter":
                     filter_to_apply = config_get_property(action, ["name"], str)
-                    parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
+                    mode = config_get_optional_property(action, ["mode"], str)
+                    if mode is None or mode == "enable":
+                        parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
+                    elif mode == "disable":
+                        parsed_actions.append(SelfishAction(FILTERS, filter_to_apply))
+                    else:
+                        raise ConfigError(f"Attempted to create an action of type \"{type}\" with an invalid \"mode\" of \"{mode}\", expected \"enable\" or \"disable\" in tree {pretty_print_configobject(action, '')}")
         activation = None
         if config_has_property(filter, ["key_combination"], str) and config_get_property(filter, ["key_combination"], str).lower() != "unset":
             activation = FilterActivation(config_get_property(filter, ["key_combination"], str),
                                           config_get_property(filter, ["toggle"], bool), 
                                           config_get_optional_property(filter, ["suppress"], bool))
-        Filter(name, title, FILTERS, parsed_actions, activation,
+        Filter(name, title, FILTERS, parsed_actions,
+               config_get_optional_property(filter, ["group"], str, "default"),
+               config_get_optional_property(filter, ["exclusive"], bool, False),
+               activation,
                background=config_get_optional_property(filter, ["color"], str),
                text_color=config_get_optional_property(filter, ["text_color"], str))
     
@@ -1243,6 +1339,8 @@ def skip_model_load(final: Box):
     final.value = True
 
 def load_model(final: Box, can_spin: Box, loading_text: Box):
+    if _skip_model_loading:
+        return skip_model_load(final)
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):

@@ -22,6 +22,7 @@
         "window_width": 300,
         "window_height": 100
     },
+    "skip_model_load": true,
     "filters": {
         "all_caps": {
             "title": "CAPS",
@@ -46,7 +47,9 @@
             "toggle": true,
             "color": "red",
             "suppress": true,
-            "key_combination": "unset",
+            "key_combination": "numpad 1",
+            "group": "radio",
+            "exclusive": "true",
             "action": "filters/security.py"
         },
         "science_radio": {
@@ -54,7 +57,9 @@
             "toggle": true,
             "color": "purple",
             "text_color": "white",
-            "key_combination": "unset",
+            "key_combination": "numpad 4",
+            "group": "radio",
+            "exclusive": "true",
             "action": "filters/science.py"
         },
         "rage": {
@@ -69,6 +74,24 @@
                 {
                     "type": "filter",
                     "name": "excited"
+                }
+            ]
+        },
+        "test": {
+            "title": "Rage",
+            "toggle": false,
+            "key_combination": ".",
+            "suppress": true,
+            "actions": [
+                {
+                    "type": "filter",
+                    "name": "rage",
+                    "mode": "disable"
+                },
+                {
+                    "type": "filter",
+                    "name": "test",
+                    "mode": "disable"
                 }
             ]
         }
