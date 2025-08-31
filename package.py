@@ -28,6 +28,7 @@ files_to_package: list[Packageable] = [
     Packageable.file("run.bat"),
     Packageable.file("setup.bat"),
     Packageable.file("stt.py"),
+    Packageable.file("changelog.txt"),
     Packageable.directory("filters", ignore=[Packageable.directory("filters/__pycache__")])
 ]
 
