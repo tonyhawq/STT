@@ -12,6 +12,7 @@ try:
     import typing
     import pyperclip
     import keyboard
+    import ctypes
     import psutil
     import os
     import io
@@ -1600,6 +1601,7 @@ class FilterActivationCallback:
                 self.filter.manager.disable_filter(self.filter.name, "keypress")
 
 def init():
+    ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6)
     wheel = "-"
     loading_finished = Box(False)
     can_spin = Box(False)
