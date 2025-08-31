@@ -24,6 +24,7 @@ from tkinter import messagebox
 from enum import Enum
 from huggingface_hub import hf_hub_download
 import traceback
+import re
 
 T = typing.TypeVar('T')
 U = typing.TypeVar('U')
@@ -678,6 +679,83 @@ def current_version():
     with open("version.number", "r") as file:
         version = file.read(-1).strip()
     return version
+
+class Changelog:
+    def __init__(self, version: str, name: str, headline: str, critical_updates: list[str] | None, date: str, categories: dict[str, list[str]]):
+        self.name = name
+        self.version = version
+        self.date = date
+        self.critical_updates = critical_updates
+        self.headline = headline
+        self.categories = categories
+    
+    @main_thread()
+    def show(self):
+        window = tk.Toplevel()
+        window.title(f"Changelog for {self.name}")
+        window.geometry(f"600x900+{window.winfo_screenwidth() // 2 - 600 // 2}+{window.winfo_screenheight() // 2 - 900 // 2}")
+        text = tk.Text(window, wrap="word")
+        text.pack(side="left", fill="both", expand=True)
+        scrollbar = tk.Scrollbar(window, command=text.yview)
+        scrollbar.pack(side="right", fill="y")
+        text.config(yscrollcommand=scrollbar.set)
+        text.tag_configure("header", font=("TkDefaultFont", 20, "bold"))
+        text.tag_configure("bold", font=("TkDefaultFont", 15, "bold"))
+        text.insert("1.0", f"Version: {self.version}\n", "header")
+        text.insert("2.0", f"Date: {self.date}\n")
+        text.insert("3.0", "Headline:\n", "header")
+        text.insert("4.0", f"{self.headline}\n", "bold")
+        line = 5
+        if self.critical_updates is not None:
+            text.insert("5.0", "Critical updates:\n", "bold")
+            line = line + 1
+            for update in self.critical_updates:
+                text.insert(f"{line}.0", f"  - {update}\n")
+                line = line + 1
+        for name, bullets in self.categories.items():
+            text.insert(f"{line}.0", f"{name}:\n", "bold")
+            line = line + 1
+            for bullet in bullets:
+                text.insert(f"{line}.0", f"  - {bullet}\n")
+                line = line + 1
+        text.config(state="disabled")
+        
+    @staticmethod
+    def parse(input: str, version: str) -> "Changelog":
+        version_idx = input.find(f"Version: {version}")
+        header_idx = input.find("---------------------------------------------------------------------------------------------------", version_idx)
+        if header_idx == -1:
+            header_idx = len(input)
+        index = version_idx
+        matches = re.findall(r" {2}(.*?)\:\n((?: {4}\-\s+.*(?:\n|$))+)", input[index:header_idx])
+        categories: dict[str, list[str]] = {}
+        for section_name, bullet_block in matches:
+            categories[section_name] = list(re.findall(r" {4}\-\s+(.*)(?:\n|$)", bullet_block))
+        name = ", ".join(typing.cast(list[str], categories.get("Name")))
+        headline = ", ".join(typing.cast(list[str], categories.get("Headline")))
+        categories.pop("Name")
+        categories.pop("Headline")
+        critical_updates = categories.pop("Critical", None)
+        return Changelog(version=version, date=str(re.findall(r"Date: (.*?)\n", input[index:header_idx])[0]), name=name, headline=headline, critical_updates=critical_updates, categories=categories)
+
+def show_version_info(text: str, changelog: Changelog):
+    res = messagebox.showinfo("New Version Available", text, type=messagebox.OKCANCEL) #type: ignore
+    if res == messagebox.OK:
+        changelog.show()
+
+def fetch_changelog() -> Changelog:
+    url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
+    response = requests.get(url, timeout=1).json()
+    changelog_url = None
+    release_version = response.get('tag_name', 'error')
+    for asset in response.get("assets", []):
+        if asset["name"] == "changelog.txt":
+            changelog_url = asset["browser_download_url"]
+            break
+    if changelog_url is None:
+        raise RuntimeError(f"No file with name changelog.txt found for release {release_version}")
+    raw_log = requests.get(changelog_url, timeout=1).text
+    return Changelog.parse(raw_log, release_version)
 
 def latest_version():
     url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
@@ -1484,7 +1562,11 @@ def init():
         current = current_version()
         latest = latest_version()
         if version_greater(latest, current):
-            spawn_thread(messagebox.showinfo, ["New Version Available", f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file."])
+            changelog = fetch_changelog()
+            text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file.\nPress OK to view the changelog."
+            if changelog.critical_updates is not None:
+                text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config.ini file."
+            spawn_thread(show_version_info, [text, changelog])
     spawn_thread(load_model, args=[loading_finished, can_spin, loading_text])
     while not loading_finished.value:
         while can_spin.value and not loading_finished.value:

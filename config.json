@@ -22,7 +22,7 @@
         "window_width": 300,
         "window_height": 100
     },
-    "skip_model_load": true,
+    "skip_model_load": false,
     "filters": {
         "all_caps": {
             "title": "CAPS",

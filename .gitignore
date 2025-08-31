@@ -9,3 +9,5 @@ dbg.lock
 releases/*
 version.number
 filters/__pycache__/*
+temp/*
+changelog.local
