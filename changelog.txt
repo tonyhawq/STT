@@ -1,4 +1,13 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.14
+Date: 2025-8-31
+  Name:
+    - The Installer Update
+  Headline:
+    - Packages an installer with all releases
+  Features:
+    - python 3.11.9 comes bundled with your installation
+---------------------------------------------------------------------------------------------------
 Version: 0.0.13
 Date: 2025-8-30
   Name:
