@@ -1,0 +1,13 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.0.11
+Date: 2025-8-30
+  Headline:
+    - Filters can be grouped and disable each other.
+  Features:
+    - Filters can have groups and be exclusive within that group.
+    - If an exclusive filter is activated, all others disable
+    - If a non-exclusive filter is activated, any enabled exclusive filters are disabled
+    - This only applies to filters within a group
+  Bugfixes:
+    - Filters no longer have the chance to increasingly make the window bigger
+    - Incorrectly typed values inside of config.json are properly caught inside of config_get_optional_property
