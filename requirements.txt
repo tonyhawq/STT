@@ -23,3 +23,4 @@ editdistance
 pyannote.metrics
 IPython
 huggingface_hub
+psutil

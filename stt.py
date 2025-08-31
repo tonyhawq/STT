@@ -1,30 +1,39 @@
-import tkinter as tk
-import threading
-import pynput
-import string
-import pyaudio
-import time
-import wave
-import json
-import typing
-import pyperclip
-import keyboard
-import mouse
-import os
-import io
-import re
-import requests
-import uuid
-import functools
-import math
-import types
-import importlib.util
-from tkinter import ttk
-from tkinter import messagebox
-from enum import Enum
-from huggingface_hub import hf_hub_download
-import traceback
-import re
+try:
+    import tkinter as tk
+    import threading
+    import pynput
+    import string
+    import pyaudio
+    import time
+    import wave
+    import json
+    import typing
+    import pyperclip
+    import keyboard
+    import psutil
+    import os
+    import io
+    import requests
+    import uuid
+    import functools
+    import math
+    import types
+    import importlib.util
+    from tkinter import ttk
+    from tkinter import messagebox
+    from enum import Enum
+    from huggingface_hub import hf_hub_download
+    import traceback
+    import re
+except ImportError as e:
+    print("An error occurred on startup!")
+    print("-" * 30)
+    print(f"{type(e).__name__}: \"{e}\"")
+    print("-" * 30)
+    print("This likely happened because of outdated dependencies.")
+    print("To resolve, run setup.bat again!")
+    print("-" * 30)
+    quit(-1)
 
 T = typing.TypeVar('T')
 U = typing.TypeVar('U')
@@ -1591,6 +1600,10 @@ def init():
     loading_text = Box("Goaning stations...")
     label.config(text=loading_text.value)
     load_settings_from_config()
+    free_ram = 4 * 1024**3
+    required_ram = 5 * 1024**3 # 5GB
+    if free_ram < required_ram:
+        messagebox.showerror("Low system memory", f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
     if allow_version_checking:
         try:
             current = current_version()

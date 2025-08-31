@@ -23,23 +23,22 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo ------------------------------------------------------
-echo  Typically hangs on Uninstalling setuptools-65.5.0...
-echo           Wait for Installation Complete!
-echo ------------------------------------------------------
-echo             Press any key to continue!
-echo ------------------------------------------------------
-pause
-
 echo[
 if exist venv (
     echo Skipping virtual environment creation...
 ) ELSE (
     echo Creating virtual environment...
     python -m venv venv
+    echo ------------------------------------------------------
+    echo  Typically hangs on Uninstalling setuptools-65.5.0...
+    echo           Wait for Installation Complete!
+    echo ------------------------------------------------------
+    echo         Press any key when ready to install.
+    echo ------------------------------------------------------
+    pause
 )
 echo Installing deps...
-venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe -m pip install -r requirements.txt --progress-bar=on
 echo ------------------------------------------------------
 echo               Installation complete!
 echo ------------------------------------------------------

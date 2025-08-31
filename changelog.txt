@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.13
+Date: 2025-8-30
+  Name:
+    - The QOL update
+  Headline:
+    - Makes setup easier.
+  Changes:
+    - setup.bat now should not freeze completely, but show a progressbar
+    - if a dependency is missing it actually tells you what to do
+---------------------------------------------------------------------------------------------------
 Version: 0.0.12
 Date: 2025-8-30
   Name:
