@@ -520,8 +520,14 @@ class Pressable:
             except ValueError as e:
                 raise RuntimeError(f"Invalid scancode {val}, expected number inside of angle brackets, got {val.removeprefix('<').removesuffix('>')}.") from e
         if val in Pressable._special_name_to_scancode:
-            return Pressable._special_name_to_scancode[val]
-        return keyboard.key_to_scan_codes(val)
+            print(f"val \"{val}\"in pressable")
+            scancodes = Pressable._special_name_to_scancode[val]
+        else:
+            scancodes = keyboard.key_to_scan_codes(val)
+        translated = []
+        for code in scancodes:
+            translated.append(translate_special_scancode(val, code))
+        return tuple(translated)
 
     @staticmethod
     def parse_hotkey(hotkey: str) -> "list[list[Pressable]]":
@@ -1317,8 +1323,33 @@ def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
             if control.should_suppress():
                 _glob_mouse_listener.suppress_event() # type: ignore
 
+_special_scancode_map: dict[int, dict[str, int]] = {
+    75: {"left": 75, "4": 80081350, "numpad 4": 80081350},
+    77: {"right": 77, "6": 80081351, "numpad 6": 80081351},
+    72: {"up": 72, "8": 80081352, "numpad 8": 80081352},
+    80: {"down": 80, "2": 80081353, "numpad 2": 80081353},
+    71: {"home": 71, "7": 80081354, "numpad 7": 80081354},
+    79: {"end": 79, "1": 80081355, "numpad 1": 80081355},
+    81: {"page down": 75, "3": 80081356, "numpad 3": 80081356},
+    73: {"page up": 73, "9": 80081357, "numpad 9": 80081357},
+}
+
+def translate_special_scancode(name: str, scancode: int) -> int:
+    mapped = _special_scancode_map.get(scancode, None)
+    print(f"Mapping for {scancode} is {mapped}")
+    if mapped is None:
+        return scancode
+    specialmapped = mapped.get(name, None)
+    print(f"Mapping for {name} is {specialmapped}")
+    if specialmapped is None:
+        return scancode
+    return specialmapped
+
 def on_key(event: keyboard.KeyboardEvent) -> bool:
-    bind = Pressable(KeyButton(event.scan_code))
+    if event.name is not None:
+        bind = Pressable(KeyButton(translate_special_scancode(event.name, event.scan_code)))
+    else:
+        bind = Pressable(KeyButton(event.scan_code))
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_key():
