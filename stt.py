@@ -256,7 +256,7 @@ class Filter:
     def on_enable(self):
         to_delete = []
         for name, filter in self.manager.enabled_filters.items():
-            if (filter is not self) and filter.group == self.group:
+            if (filter is not self) and (filter.exclusive or self.exclusive) and filter.group == self.group:
                 to_delete.append(name)
         for name in to_delete:
             self.manager.force_disable_filter(name)
@@ -303,6 +303,7 @@ def set_window_geometry(width, height):
 
 class ExpandableColumnFlow:
     def __init__(self, parent, columns):
+        self.lock = threading.Lock()
         self.grid = tk.Frame(parent)
         for col in range(columns):
             self.grid.grid_columnconfigure(col, minsize=100)
@@ -370,9 +371,10 @@ class FilterManager:
         filter = self.registered_filters[name]
         if len(filter.enabled_by) == 0:
             filter.on_enable()
-            filter.display = self.display.add_button()
-            filter.display.config(text=filter.title, background=filter.background, foreground=filter.text_color)
-        filter.enabled_by[source] = True
+            with self.display.lock:
+                filter.display = self.display.add_button()
+                filter.display.config(text=filter.title, background=filter.background, foreground=filter.text_color)
+            filter.enabled_by[source] = True
         self.enabled_filters[filter.name] = filter
         for action in filter.actions:
             self.enable_action(action, source=filter)
@@ -389,8 +391,9 @@ class FilterManager:
         filter.on_disable()
         self.enabled_filters.pop(filter.name, None)
         if not (filter.display is None):
-            self.display.delete_button(filter.display)
-            filter.display = None
+            with self.display.lock:
+                self.display.delete_button(filter.display)
+                filter.display = None
         for action in filter.actions:
             self.disable_action(action, source=filter)
 
@@ -702,6 +705,16 @@ class ConfigError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
+# Raised when the final object is not of expected type
+class ConfigTypeError(ConfigError):
+    def __init__(self, message):
+        super().__init__(message)
+
+# Raised when traversing the tree failed
+class ConfigTraversalError(ConfigError):
+    def __init__(self, message):
+        super().__init__(message)
+
 def strip_generics_from(tval):
     origin = getattr(tval, '__origin__', None)
     if origin is None:
@@ -822,16 +835,16 @@ def config_get_property(obj, names, expected_type) -> object:
     expected_type = strip_generics_from(expected_type)
     for name in names:
         if not derived.isinstance(dict):
-            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {pretty_print_configobject(derived, expected=f'dictionary, got {type(derived.decay()).__name__}')}. (See example config.json!)")
+            raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {pretty_print_configobject(derived, expected=f'dictionary, got {type(derived.decay()).__name__}')}. (See example config.json!)")
         derived = typing.cast(ConfigObject[dict], derived)
         if not name in derived.decay():
             likely_type = dict
             if name == names[-1]:
                 likely_type = expected_type
-            raise ConfigError(f"Could not get value of option {names[-1]}, {name} was not found in tree {pretty_print_configobject(derived, doublequote(name) + f' (a {likely_type.__name__} value)')}. (See example config.json!)")
+            raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not found in tree {pretty_print_configobject(derived, doublequote(name) + f' (a {likely_type.__name__} value)')}. (See example config.json!)")
         derived = derived[name]
     if not derived.isinstance(expected_type):
-        raise ConfigError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__} in tree {pretty_print_configobject(derived, expected_type.__name__)}")
+        raise ConfigTypeError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__} in tree {pretty_print_configobject(derived, expected_type.__name__)}")
     if expected_type is list or expected_type is dict:
         return derived
     return derived.decay()
@@ -840,7 +853,7 @@ def config_has_property(obj: ConfigObject, names: list[str], expected_type: typi
     try:
         config_get_property(obj, names, expected_type)
         return True
-    except:
+    except ConfigTraversalError:
         return False
 
 @typing.overload
@@ -854,7 +867,7 @@ def config_get_optional_property(obj: ConfigObject, names: list[str], expected_t
 def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: T | None = None) -> T|None:
     try:
         return config_get_property(obj, names, expected_type)
-    except Exception:
+    except ConfigTraversalError:
         return option
 
 class KeyCombinationControl:
