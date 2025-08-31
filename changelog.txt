@@ -1,4 +1,13 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.12
+Date: 2025-8-30
+  Name:
+    - The Changelog Fix Update
+  Headline:
+    - Fixes changelog loading.
+  Bugfixes:
+    - Changelogs from github load properly, when previously would error out.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.11
 Date: 2025-8-30
   Name:

@@ -722,7 +722,11 @@ class Changelog:
         
     @staticmethod
     def parse(input: str, version: str) -> "Changelog":
+        input = input.replace("\t", "  ").replace("\r\n", "\n").replace("\r", "\n")
+        print(f"parsing changelog for version {version}")
         version_idx = input.find(f"Version: {version}")
+        if version_idx == -1:
+            raise RuntimeError(f"Changelog does not have {version} entry.")
         header_idx = input.find("---------------------------------------------------------------------------------------------------", version_idx)
         if header_idx == -1:
             header_idx = len(input)
@@ -731,10 +735,10 @@ class Changelog:
         categories: dict[str, list[str]] = {}
         for section_name, bullet_block in matches:
             categories[section_name] = list(re.findall(r" {4}\-\s+(.*)(?:\n|$)", bullet_block))
-        name = ", ".join(typing.cast(list[str], categories.get("Name")))
-        headline = ", ".join(typing.cast(list[str], categories.get("Headline")))
-        categories.pop("Name")
-        categories.pop("Headline")
+        name = ", ".join(typing.cast(list[str], categories.get("Name", [])))
+        headline = ", ".join(typing.cast(list[str], categories.get("Headline", [])))
+        categories.pop("Name", None)
+        categories.pop("Headline", None)
         critical_updates = categories.pop("Critical", None)
         return Changelog(version=version, date=str(re.findall(r"Date: (.*?)\n", input[index:header_idx])[0]), name=name, headline=headline, critical_updates=critical_updates, categories=categories)
 
@@ -755,6 +759,7 @@ def fetch_changelog() -> Changelog:
     if changelog_url is None:
         raise RuntimeError(f"No file with name changelog.txt found for release {release_version}")
     raw_log = requests.get(changelog_url, timeout=1).text
+    print(raw_log)
     return Changelog.parse(raw_log, release_version)
 
 def latest_version():
@@ -1559,14 +1564,17 @@ def init():
     label.config(text=loading_text.value)
     load_settings_from_config()
     if allow_version_checking:
-        current = current_version()
-        latest = latest_version()
-        if version_greater(latest, current):
-            changelog = fetch_changelog()
-            text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file.\nPress OK to view the changelog."
-            if changelog.critical_updates is not None:
-                text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config.ini file."
-            spawn_thread(show_version_info, [text, changelog])
+        try:
+            current = current_version()
+            latest = latest_version()
+            if version_greater(latest, current):
+                changelog = fetch_changelog()
+                text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file.\nPress OK to view the changelog."
+                if changelog.critical_updates is not None:
+                    text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config.ini file."
+                spawn_thread(show_version_info, [text, changelog])
+        except Exception as e:
+            spawn_thread(messagebox.showerror, ["An error has occurred", f"Encountered {type(e).__name__} {e} while checking version."])
     spawn_thread(load_model, args=[loading_finished, can_spin, loading_text])
     while not loading_finished.value:
         while can_spin.value and not loading_finished.value:
