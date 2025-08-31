@@ -1600,7 +1600,7 @@ def init():
     loading_text = Box("Goaning stations...")
     label.config(text=loading_text.value)
     load_settings_from_config()
-    free_ram = 4 * 1024**3
+    free_ram = psutil.virtual_memory().available
     required_ram = 5 * 1024**3 # 5GB
     if free_ram < required_ram:
         messagebox.showerror("Low system memory", f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
