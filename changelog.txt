@@ -1,6 +1,8 @@
 ---------------------------------------------------------------------------------------------------
 Version: 0.0.11
 Date: 2025-8-30
+  Name:
+    - The Group Update
   Headline:
     - Filters can be grouped and disable each other.
   Features:
