@@ -705,7 +705,7 @@ class Changelog:
         line = 1
         for log in logs:
             if line != 1:
-                text.insert(f"{line}.0", "-" * 15)
+                text.insert(f"{line}.0", f"{'-' * 15}\n")
                 line = line + 1
             text.insert(f"{line}.0", f"Version: {log.version}\n", "header")
             line = line + 1
