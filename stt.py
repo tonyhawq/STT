@@ -1,3 +1,5 @@
+import sys
+print(sys.path)
 try:
     import tkinter as tk
     import threading
@@ -33,7 +35,7 @@ except ImportError as e:
     print("This likely happened because of outdated dependencies.")
     print("To resolve, run setup.bat again!")
     print("-" * 30)
-    quit(-1)
+    sys.exit(-1)
 
 T = typing.TypeVar('T')
 U = typing.TypeVar('U')
