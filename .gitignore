@@ -11,3 +11,4 @@ version.number
 filters/__pycache__/*
 temp/*
 changelog.local
+embedded/*
