@@ -821,9 +821,42 @@ def version_greater(v1, v2):
     t2 = tuple(map(int, v2.split(".")))
     return t1 > t2
 
+class VirtualNamedInput:
+    def __init__(self, name: str):
+        self.name = name
+        self.is_pressed = False
+
+    def aliases(self) -> list[Pressable]:
+        return flatten_simple_hotkey(self.name)
+    
+    def press(self):
+        self.is_pressed = True
+    
+    def release(self):
+        self.is_pressed = False
+
+INPUTS_BY_PRESSABLE: dict[Pressable, list[VirtualNamedInput]] = {}
+# Exists to replace keyboard.is_pressed()
+# keyboard.is_pressed() does not update when a synthetic key is passed
+# so would break often
+# Now INPUTS_BY_PRESSABLE and INPUTS_BY_NAME are interlinked
+# You can lookup a VirtualNamedInput (an input with a name and is_pressed state)
+# By name (w, a, shift, alt)
+# When a pressable that is associated with that key is pressed, it looks up what VirtualNamedInputs are actually associated with that key
+# and presses/releases them
+INPUTS_BY_NAME: dict[str, VirtualNamedInput] = {}
 CONTROLS: dict[str, Control] = {}
 CONTROLBUTTONS_BY_KEY: dict[Pressable, ControlButton] = {}
 WORD_REPLACEMENTS: dict[str, str] = {}
+
+def populate_named_inputs():
+    inputs_to_name = list(string.ascii_lowercase)
+    inputs_to_name += ["menu", "shift", "alt", "ctrl", "space", "left", "right", "up", "down"]
+    for name in inputs_to_name:
+        virtual = VirtualNamedInput(name)
+        for alias in virtual.aliases():
+            INPUTS_BY_PRESSABLE.setdefault(alias, []).append(virtual)
+        INPUTS_BY_NAME[name] = virtual
 
 class ConfigError(Exception):
     def __init__(self, message):
@@ -1081,6 +1114,8 @@ def set_control(hotkey: str, name: str, action: typing.Callable, release: typing
 
 FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
+say_sleep_ms = 0
+
 def load_settings_from_config():
     print(f"Loading from config...")
     config: ConfigObject
@@ -1111,6 +1146,8 @@ def load_settings_from_config():
     use_say_or_chat = config_get_property(config, ["output", "use_say_or_chat"], str)
     if use_say_or_chat == "say":
         use_say = True
+        global say_sleep_ms
+        say_sleep_ms = float(config_get_property(config, ["output", "say_settings", "delay_ms"], int)) / 1000
     elif use_say_or_chat == "chat":
         use_say = False
         global chat_key
@@ -1279,20 +1316,6 @@ def colorize(val: str, time: float):
         obj.config(bg="white")
     background.config_and_apply(bg=val)(_recolor, time)
 
-blockable_keys = ['w', 'a', 's', 'd', 'f', 'e', 'x', 'alt', 'space']
-pressed_keys = {}
-
-def key_filter(event: keyboard.KeyboardEvent):
-    if not (event.name in blockable_keys):
-        return True
-    if event.event_type == 'down':
-        verbose_print("Keypress blocked", event.name)
-        pressed_keys[event.name] = True
-    else:
-        verbose_print("Depress blocked", event.name)
-        pressed_keys[event.name] = False
-    return False
-
 def submit_chat(transcript: str):
     pyperclip.copy(transcript)
     controller.press(chat_key)
@@ -1308,23 +1331,143 @@ def submit_chat(transcript: str):
 
 def submit_say(transcript: str):
     pyperclip.copy(f"Say \"{transcript}\"")
-    time.sleep(0.05)
-    controller.press(pynput.keyboard.Key.tab)
-    controller.release(pynput.keyboard.Key.tab)
-    time.sleep(0.05)
-    with controller.pressed(pynput.keyboard.Key.ctrl):
-        controller.press('v')
-        controller.release('v')
-    controller.press(pynput.keyboard.Key.enter)
-    controller.release(pynput.keyboard.Key.enter)
-    controller.press(pynput.keyboard.Key.tab)
-    controller.release(pynput.keyboard.Key.tab)
-    time.sleep(0.05)
+    time.sleep(say_sleep_ms)
+    press_and_release_key("tab")
+    time.sleep(say_sleep_ms)
+    press_and_release_key("x")
+    press_and_release_key("menu")
+    time.sleep(0.2)
+    press_key("shift")
+    press_and_release_key("a")
+    release_key("shift")
+    press_and_release_key("backspace")
+    press_key("ctrl")
+    press_and_release_key("v")
+    release_key("ctrl")
+    press_and_release_key("enter")
+    press_and_release_key("tab")
+    time.sleep(say_sleep_ms)
 
 def perform_transformations(transcript: str) -> str:
     for word, replacement in WORD_REPLACEMENTS.items():
         transcript = transcript.replace(word, replacement)
     return FILTERS.transform_input(transcript)
+
+class ModifyableVirtualNamedInput(VirtualNamedInput):
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.was_modified = False
+    
+    def __repr__(self):
+        return f"ModifyableVirtualNamedInput({self.name} was modified: {self.was_modified} press state: {self.is_pressed})"
+
+    def press(self):
+        super().press()
+        self.was_modified = True
+    
+    def release(self):
+        super().release()
+        self.was_modified = True
+
+blocked_key_lock = threading.Lock()
+# Currently blocked keys. Usually empty.
+BLOCKED_KEYS: dict[Pressable, ModifyableVirtualNamedInput] = {}
+# Default blocked keys. Should not modify. Filled in setup_default_blocked_keys()
+DEFAULT_BLOCKED_KEYS: dict[Pressable, ModifyableVirtualNamedInput] = {}
+# a dict of pressable -> MVNI. When a pressable is touched it touches the MVNI. MVNIs are shared between pressables, so keys with aliases (ctrl -> left control, right control)
+# are handled correctly.
+BLOCKED_KEYS_PRESS_RECORD: dict[Pressable, ModifyableVirtualNamedInput] = {}
+# The actual list of MVNIs. Has no duplicates.
+BLOCKED_KEYS_MASTERLIST: list[ModifyableVirtualNamedInput] = []
+
+def flatten_simple_hotkey(hotkey) -> list[Pressable]:
+    parsed = Pressable.parse_hotkey(hotkey)
+    if len(parsed) != 1:
+        raise RuntimeError(f"Attempted to flatten hotkey which was either a combination or had no values, len(parsed) was {len(parsed)}")
+    added: set[Pressable] = set()
+    for alias in parsed[0]:
+        added.add(alias)
+    return list(added)
+    
+def setup_default_blocked_keys():
+    blockable_keys = ['w', 'a', 's', 'd', 'f', 'e', 'x', 'alt', 'space', 'left', 'right']
+    for key in blockable_keys:
+        name = ModifyableVirtualNamedInput(key)
+        hotkey = Pressable.parse_hotkey(key)
+        for aliases in hotkey:
+            for alias in aliases:
+                DEFAULT_BLOCKED_KEYS[alias] = name
+                print(f"blocking {alias} with name {name.name}")
+
+def synchronized_with(lock):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with lock:
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+kblock = threading.Lock()
+
+@synchronized_with(kblock)
+def is_pressed(key: str):
+    return INPUTS_BY_NAME[key].is_pressed
+
+@synchronized_with(kblock)
+def _perform_keyboard_action(action: typing.Callable, *args, **kwargs):
+    action(*args, **kwargs)
+
+def press_key(key: str):
+    _perform_keyboard_action(keyboard.send, key, True, False)
+
+def press_and_release_key(key: str):
+    _perform_keyboard_action(keyboard.send, key, True, True)
+
+def release_key(key: str):
+    _perform_keyboard_action(keyboard.send, key, False, True)
+
+def block_problematic_inputs():
+    with blocked_key_lock:
+        global BLOCKED_KEYS_MASTERLIST
+        BLOCKED_KEYS_MASTERLIST = []
+        global BLOCKED_KEYS
+        global BLOCKED_KEYS_PRESS_RECORD
+        BLOCKED_KEYS = DEFAULT_BLOCKED_KEYS
+        BLOCKED_KEYS_PRESS_RECORD = {}
+        for key in BLOCKED_KEYS.values():
+            pressed = ModifyableVirtualNamedInput(key.name)
+            BLOCKED_KEYS_MASTERLIST.append(pressed)
+            if is_pressed(key.name):
+                print(" CCC is_pressed")
+                pressed.press()
+                # fuck it special case
+                if key.name == "alt":
+                    release_key("alt")
+            parsed = flatten_simple_hotkey(key.name)
+            for pressable in parsed:
+                BLOCKED_KEYS_PRESS_RECORD[pressable] = pressed
+
+def unblock_problematic_inputs():
+    masterlist = []
+    with blocked_key_lock:
+        global BLOCKED_KEYS
+        global BLOCKED_KEYS_MASTERLIST
+        global BLOCKED_KEYS_PRESS_RECORD
+        BLOCKED_KEYS = {}
+        masterlist = BLOCKED_KEYS_MASTERLIST
+        BLOCKED_KEYS_PRESS_RECORD = {}
+        BLOCKED_KEYS_MASTERLIST = []
+        for name in masterlist:
+            print(f" CTX Checking status of {name.name}")
+            if name.was_modified:
+                print(f" CTX was modified")
+                if name.is_pressed:
+                    print(f" CTX should press")
+                    press_key(name.name)
+                else:
+                    print(f" CTX should depress")
+                    release_key(name.name)
 
 def submit():
     global state
@@ -1335,17 +1478,9 @@ def submit():
         transcript = TRANSCRIBED
     _finalize_process()
     label.configure(text=transcript)
-    print("Submitting transcript")
+    print("--- Submitting transcript")
     colorize("green", 1)
-    global pressed_keys
-    pressed_keys = {}
-    for key in blockable_keys:
-        if keyboard.is_pressed(key):
-            pressed_keys[key] = True
-    # fuck it special case
-    if "alt" in pressed_keys:
-        controller.release(pynput.keyboard.Key.alt_l)
-    hook = keyboard.hook(key_filter, True)
+    block_problematic_inputs()
     global IS_RADIO
     try:
         radio = IS_RADIO
@@ -1357,14 +1492,9 @@ def submit():
         else:
             submit_chat(perform_transformations(transcript))
     except:
-        keyboard.unhook(hook)
         raise
-    keyboard.unhook(hook)
-    for key, value in pressed_keys.items():
-        if value:
-            keyboard.press(key)
-        else:
-            keyboard.release(key)
+    finally:
+        unblock_problematic_inputs()
     IS_RADIO = False
     set_radio_colors()
 
@@ -1456,12 +1586,22 @@ _glob_mouse_listener: pynput.mouse.Listener = None # type: ignore
 
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
     bind = Pressable(MouseButton(button.name))
+    allow_through = True
+    with blocked_key_lock:
+        if bind in BLOCKED_KEYS:
+            allow_through = False
+            if pressed:
+                BLOCKED_KEYS_PRESS_RECORD[bind].press()
+            else:
+                BLOCKED_KEYS_PRESS_RECORD[bind].release()
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_mouse():
             control.press() if pressed else control.release()
             if control.should_suppress():
-                _glob_mouse_listener.suppress_event() # type: ignore
+                allow_through = False
+    if not allow_through:
+        _glob_mouse_listener.suppress_event() # type: ignore
 
 _special_scancode_map: dict[int, dict[str, int]] = {
     75: {"left": 75, "4": 80081350, "numpad 4": 80081350},
@@ -1476,27 +1616,48 @@ _special_scancode_map: dict[int, dict[str, int]] = {
 
 def translate_special_scancode(name: str, scancode: int) -> int:
     mapped = _special_scancode_map.get(scancode, None)
-    print(f"Mapping for {scancode} is {mapped}")
     if mapped is None:
         return scancode
     specialmapped = mapped.get(name, None)
-    print(f"Mapping for {name} is {specialmapped}")
     if specialmapped is None:
         return scancode
     return specialmapped
 
+@synchronized_with(kblock)
 def on_key(event: keyboard.KeyboardEvent) -> bool:
+    print("HANDLE pressed", event.name, "down:", event.event_type == "down")
     if event.name is not None:
         bind = Pressable(KeyButton(translate_special_scancode(event.name, event.scan_code)))
     else:
         bind = Pressable(KeyButton(event.scan_code))
+    if bind in INPUTS_BY_PRESSABLE:
+        if event.event_type == "down":
+            for virtual in INPUTS_BY_PRESSABLE[bind]:
+                virtual.press()
+        else:
+            for virtual in INPUTS_BY_PRESSABLE[bind]:
+                virtual.release()
+    allow_through = True
+    with blocked_key_lock:
+        print(f"trying bind {bind}")
+        if bind in BLOCKED_KEYS:
+            print(f"bind was in")
+            allow_through = False
+            if event.event_type == "down":
+                BLOCKED_KEYS_PRESS_RECORD[bind].press()
+                print(f"pressing")
+            else:
+                BLOCKED_KEYS_PRESS_RECORD[bind].release()
+                print(f"depressing")
+        else:
+            print(f"{bind} not in {BLOCKED_KEYS.keys()}")
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_key():
             control.press() if event.event_type == "down" else control.release()
             if control.should_suppress():
                 return False
-    return True
+    return allow_through
 
 def mouse_listener():
     global _glob_mouse_listener
@@ -1506,7 +1667,20 @@ def mouse_listener():
 def keyboard_listener():
     keyboard.hook(on_key, suppress=True)
     
+class ObjectWithTextAttributeWhichIsAString:
+    def __init__(self, val: str):
+        self.text = val
+
+class FakeASRModel:
+    def __init__(self):
+        pass
+
+    def transcribe(self, args: list[str]) -> tuple[ObjectWithTextAttributeWhichIsAString]:
+        return (ObjectWithTextAttributeWhichIsAString("skipped model loading"),)
+
 def skip_model_load(final: Box):
+    global asr_model
+    asr_model = FakeASRModel()
     final.value = True
 
 def load_model(final: Box, can_spin: Box, loading_text: Box):
@@ -1608,6 +1782,8 @@ def init():
     loading_text = Box("Goaning stations...")
     label.config(text=loading_text.value)
     load_settings_from_config()
+    populate_named_inputs()
+    setup_default_blocked_keys()
     free_ram = psutil.virtual_memory().available
     required_ram = 5 * 1024**3 # 5GB
     if free_ram < required_ram:

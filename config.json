@@ -8,7 +8,9 @@
     },
     "output": {
         "use_say_or_chat": "say",
-        "say_settings": {},
+        "say_settings": {
+            "delay_ms": 100
+        },
         "chat_settings": {
             "chat_key": "t",
             "chat_delay": 0.75
@@ -22,7 +24,7 @@
         "window_width": 300,
         "window_height": 100
     },
-    "skip_model_load": false,
+    "skip_model_load": true,
     "filters": {
         "all_caps": {
             "title": "CAPS",
