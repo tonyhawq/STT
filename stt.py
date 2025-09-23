@@ -21,6 +21,7 @@ try:
     import functools
     import math
     import types
+    import pynput._util.win32
     import importlib.util
     from tkinter import ttk
     from tkinter import messagebox
@@ -73,6 +74,9 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
         print(f"Fatal error encountered while processing {type(exception).__name__} ({exception}): {type(e).__name__}: {e}")
         quit()
 
+def _report_exception(e: Exception, context: str | None = None):
+    root.after(0, _global_exception_handler, e, exception_to_filtered_traceback(e, context=context))
+
 def _thread_ctx(func: typing.Callable, context: str, args: list = []):
     try:
         global thread_context
@@ -80,7 +84,7 @@ def _thread_ctx(func: typing.Callable, context: str, args: list = []):
         verbose_print("calling", func, "with", args)
         func(*args)
     except Exception as e:
-        root.after(0, _global_exception_handler, e, exception_to_filtered_traceback(e, context=context))
+        _report_exception(e, context)
         
 _to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", "mainloop", "__call__", "callit", "spawn_thread"]
 
@@ -458,10 +462,10 @@ class MouseButton:
         self.button = button
     
     def __repr__(self):
-        return f"mouse {self.button}"
+        return f"MouseButton({self.button})"
 
     def __str__(self):
-        return f"mouse {self.button}"
+        return f"MouseButton({self.button})"
     
     def __hash__(self) -> int:
         return self.button.__hash__()
@@ -511,7 +515,8 @@ class Pressable:
         return f"Pressable({self.control.__str__()})"
 
     @staticmethod
-    def _mouse_button_from_str(val: str) -> str:
+    def _mouse_button_from_str(val: str, custom_mappings: dict[str, str] = {"lmb": "left", "rmb": "right", "mmb": "middle"}) -> str:
+        val = custom_mappings.get(val, val)
         getattr(pynput.mouse.Button, val)
         return val
 
@@ -1331,16 +1336,8 @@ def submit_chat(transcript: str):
 
 def submit_say(transcript: str):
     pyperclip.copy(f"Say \"{transcript}\"")
-    time.sleep(say_sleep_ms)
     press_and_release_key("tab")
     time.sleep(say_sleep_ms)
-    press_and_release_key("x")
-    press_and_release_key("menu")
-    time.sleep(0.2)
-    press_key("shift")
-    press_and_release_key("a")
-    release_key("shift")
-    press_and_release_key("backspace")
     press_key("ctrl")
     press_and_release_key("v")
     release_key("ctrl")
@@ -1369,7 +1366,6 @@ class ModifyableVirtualNamedInput(VirtualNamedInput):
         super().release()
         self.was_modified = True
 
-blocked_key_lock = threading.Lock()
 # Currently blocked keys. Usually empty.
 BLOCKED_KEYS: dict[Pressable, ModifyableVirtualNamedInput] = {}
 # Default blocked keys. Should not modify. Filled in setup_default_blocked_keys()
@@ -1390,14 +1386,29 @@ def flatten_simple_hotkey(hotkey) -> list[Pressable]:
     return list(added)
     
 def setup_default_blocked_keys():
-    blockable_keys = ['w', 'a', 's', 'd', 'f', 'e', 'x', 'alt', 'space', 'left', 'right']
+    blockable_keys = ['w', 'a', 's', 'd', 'f', 'e', 'x', 'alt', 'space', 'lmb', 'rmb']
     for key in blockable_keys:
         name = ModifyableVirtualNamedInput(key)
-        hotkey = Pressable.parse_hotkey(key)
-        for aliases in hotkey:
-            for alias in aliases:
-                DEFAULT_BLOCKED_KEYS[alias] = name
-                print(f"blocking {alias} with name {name.name}")
+        aliases = flatten_simple_hotkey(key)
+        for alias in aliases:
+            DEFAULT_BLOCKED_KEYS[alias] = name
+            print(f"blocking {alias} with name {name.name}")
+
+def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple()):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except allowed_exceptions:
+                raise
+            except Exception as e:
+                try:
+                    _report_exception(e, context=thread_context.value)
+                except:
+                    _report_exception(e, "No context available for exception.")
+        return wrapper
+    return decorator
 
 def synchronized_with(lock):
     def decorator(func):
@@ -1408,7 +1419,7 @@ def synchronized_with(lock):
         return wrapper
     return decorator
 
-kblock = threading.Lock()
+kblock = threading.RLock()
 
 @synchronized_with(kblock)
 def is_pressed(key: str):
@@ -1428,17 +1439,17 @@ def release_key(key: str):
     _perform_keyboard_action(keyboard.send, key, False, True)
 
 def block_problematic_inputs():
-    with blocked_key_lock:
+    with kblock:
         global BLOCKED_KEYS_MASTERLIST
         BLOCKED_KEYS_MASTERLIST = []
         global BLOCKED_KEYS
         global BLOCKED_KEYS_PRESS_RECORD
         BLOCKED_KEYS = DEFAULT_BLOCKED_KEYS
         BLOCKED_KEYS_PRESS_RECORD = {}
-        for key in BLOCKED_KEYS.values():
+        for source, key in BLOCKED_KEYS.items():
             pressed = ModifyableVirtualNamedInput(key.name)
             BLOCKED_KEYS_MASTERLIST.append(pressed)
-            if is_pressed(key.name):
+            if source.is_keyboard() and is_pressed(key.name):
                 print(" CCC is_pressed")
                 pressed.press()
                 # fuck it special case
@@ -1450,7 +1461,7 @@ def block_problematic_inputs():
 
 def unblock_problematic_inputs():
     masterlist = []
-    with blocked_key_lock:
+    with kblock:
         global BLOCKED_KEYS
         global BLOCKED_KEYS_MASTERLIST
         global BLOCKED_KEYS_PRESS_RECORD
@@ -1584,16 +1595,15 @@ def on_radio_release_handler():
 
 _glob_mouse_listener: pynput.mouse.Listener = None # type: ignore
 
-def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool):
+@must_recover((pynput._util.win32.SystemHook.SuppressException,))
+def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool, dummy):
     bind = Pressable(MouseButton(button.name))
     allow_through = True
-    with blocked_key_lock:
+    with kblock:
+        print(f"pressed mb {bind}")
         if bind in BLOCKED_KEYS:
+            print(f"mb in blocke")
             allow_through = False
-            if pressed:
-                BLOCKED_KEYS_PRESS_RECORD[bind].press()
-            else:
-                BLOCKED_KEYS_PRESS_RECORD[bind].release()
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_mouse():
@@ -1623,6 +1633,7 @@ def translate_special_scancode(name: str, scancode: int) -> int:
         return scancode
     return specialmapped
 
+@must_recover()
 @synchronized_with(kblock)
 def on_key(event: keyboard.KeyboardEvent) -> bool:
     print("HANDLE pressed", event.name, "down:", event.event_type == "down")
@@ -1638,19 +1649,18 @@ def on_key(event: keyboard.KeyboardEvent) -> bool:
             for virtual in INPUTS_BY_PRESSABLE[bind]:
                 virtual.release()
     allow_through = True
-    with blocked_key_lock:
-        print(f"trying bind {bind}")
-        if bind in BLOCKED_KEYS:
-            print(f"bind was in")
-            allow_through = False
-            if event.event_type == "down":
-                BLOCKED_KEYS_PRESS_RECORD[bind].press()
-                print(f"pressing")
-            else:
-                BLOCKED_KEYS_PRESS_RECORD[bind].release()
-                print(f"depressing")
+    print(f"trying bind {bind}")
+    if bind in BLOCKED_KEYS:
+        print(f"bind was in")
+        allow_through = False
+        if event.event_type == "down":
+            BLOCKED_KEYS_PRESS_RECORD[bind].press()
+            print(f"pressing")
         else:
-            print(f"{bind} not in {BLOCKED_KEYS.keys()}")
+            BLOCKED_KEYS_PRESS_RECORD[bind].release()
+            print(f"depressing")
+    else:
+        print(f"{bind} not in {BLOCKED_KEYS.keys()}")
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_key():
@@ -1661,7 +1671,7 @@ def on_key(event: keyboard.KeyboardEvent) -> bool:
 
 def mouse_listener():
     global _glob_mouse_listener
-    with pynput.mouse.Listener(on_click=on_click) as _glob_mouse_listener:
+    with pynput.mouse.Listener(on_click=on_click) as _glob_mouse_listener: # type: ignore
         _glob_mouse_listener.join()
 
 def keyboard_listener():
