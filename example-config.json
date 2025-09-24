@@ -25,6 +25,9 @@
         "window_height": 100
     },
     "skip_model_load": false,
+    "filter_controls": {
+        "rage": "`"
+    },
     "filters": {
         "all_caps": {
             "title": "CAPS",
