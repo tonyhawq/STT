@@ -12,3 +12,4 @@ filters/__pycache__/*
 temp/*
 changelog.local
 embedded/*
+userconfig.json

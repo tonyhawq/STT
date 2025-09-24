@@ -2,6 +2,7 @@ import sys
 print(sys.path)
 try:
     import tkinter as tk
+    from tkinter import messagebox
     import threading
     import pynput
     import string
@@ -24,7 +25,6 @@ try:
     import pynput._util.win32
     import importlib.util
     from tkinter import ttk
-    from tkinter import messagebox
     from enum import Enum
     from huggingface_hub import hf_hub_download
     import traceback
@@ -37,6 +37,10 @@ except ImportError as e:
     print("This likely happened because of outdated dependencies.")
     print("To resolve, run setup.bat again!")
     print("-" * 30)
+    try:
+        messagebox.showerror("Imports failure", f"STT failed to load due to missing imports. This is likely caused by outdated dependencies. To resolve, run setup.bat again!\n\n{e}") #type: ignore
+    except Exception as e:
+        pass
     sys.exit(-1)
 
 T = typing.TypeVar('T')
@@ -295,7 +299,7 @@ class Filter:
         self.enabled_by: dict[str, bool] = {}
         self.manager.register(self)
         self.display: ttk.Label | None = None
-    
+
     def on_enable(self):
         to_delete = []
         for name, filter in self.manager.enabled_filters.items():
@@ -558,6 +562,8 @@ class Pressable:
         pressables: list[list[Pressable]] = []
         for value in values:
             try:
+                if value.strip().lower() in ("unbound", "unset"):
+                    continue
                 codes = Pressable._str_to_scancode(value)
                 aliases = []
                 for scancode in codes:
@@ -864,18 +870,18 @@ def populate_named_inputs():
         INPUTS_BY_NAME[name] = virtual
 
 class ConfigError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 # Raised when the final object is not of expected type
 class ConfigTypeError(ConfigError):
-    def __init__(self, message):
-        super().__init__(message)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 # Raised when traversing the tree failed
 class ConfigTraversalError(ConfigError):
-    def __init__(self, message):
-        super().__init__(message)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 def strip_generics_from(tval):
     origin = getattr(tval, '__origin__', None)
@@ -890,6 +896,10 @@ class ConfigObject(typing.Generic[T]):
         self._value: T = value
         self._parent = parent
         self._key = key
+        self._fallback = None
+
+    def set_fallback(self, obj: "ConfigObject"):
+        self._fallback = obj
     
     def __getattr__(self, attr):
         return getattr(self._value, attr)
@@ -937,18 +947,6 @@ class ConfigObject(typing.Generic[T]):
     def decay(self):
         return self._value
 
-@typing.overload
-def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[list[T]]) -> ConfigObject[list[T]]:
-    ...
-
-@typing.overload
-def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[dict[T, U]]) -> ConfigObject[dict[T, U]]:
-    ...
-
-@typing.overload
-def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> T:
-    ...
-
 def pretty_print_configobject(bottom: ConfigObject, expected: str):
     chain: list[ConfigObject] = []
     current = bottom
@@ -992,24 +990,88 @@ def pretty_print_configobject(bottom: ConfigObject, expected: str):
 def doublequote(val: str) -> str:
     return f"\"{val}\""
 
-def config_get_property(obj, names, expected_type) -> object:
-    derived = obj
-    expected_type = strip_generics_from(expected_type)
-    for name in names:
-        if not derived.isinstance(dict):
-            raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {pretty_print_configobject(derived, expected=f'dictionary, got {type(derived.decay()).__name__}')}. (See example config.json!)")
-        derived = typing.cast(ConfigObject[dict], derived)
-        if not name in derived.decay():
-            likely_type = dict
-            if name == names[-1]:
-                likely_type = expected_type
-            raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not found in tree {pretty_print_configobject(derived, doublequote(name) + f' (a {likely_type.__name__} value)')}. (See example config.json!)")
-        derived = derived[name]
-    if not derived.isinstance(expected_type):
-        raise ConfigTypeError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__} in tree {pretty_print_configobject(derived, expected_type.__name__)}")
-    if expected_type is list or expected_type is dict:
-        return derived
-    return derived.decay()
+_JSON_FRIENDLY_ERROR_MAP = {
+    "Expecting property name enclosed in double quotes":
+        "Trailing comma or missing key quotes (remove any trailing commas, and make sure keys are in double quotes).",
+
+    "Unterminated string starting at":
+        "Unterminated string. Make sure all strings are enclosed in double quotes and properly closed.",
+
+    "Expecting ',' delimiter":
+        "Missing comma between items.",
+
+    "Expecting ':' delimiter":
+        "Missing colon after a key. Use \"key\": value.",
+
+    "Extra data":
+        "Extra data found after valid JSON. Remove any trailing characters outside the main object/array.",
+
+    "Invalid control character":
+        "Invalid control character in string. Check for unescaped characters like newlines inside strings.",
+
+    "Invalid \\escape":
+        "Invalid escape sequence in string. Use valid escapes like \\n, \\t, \\\".",
+
+    "Expecting value":
+        "Missing or invalid value. Examples of valid values: string, float, int, array, true, false, null.",
+
+    "Expecting ',' or '}'":
+        "Trailing comma before closing brace or missing comma between object items.",
+
+    "Expecting ',' or ']'":
+        "Trailing comma before closing bracket or missing comma between array items."
+}
+
+
+@typing.overload
+def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[list[T]], *, exceptions: list[Exception] | None = None) -> ConfigObject[list[T]]:
+    ...
+
+@typing.overload
+def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[dict[T, U]], *, exceptions: list[Exception] | None = None) -> ConfigObject[dict[T, U]]:
+    ...
+
+@typing.overload
+def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], *, exceptions: list[Exception] | None = None) -> T:
+    ...
+
+def config_get_property(obj, names, expected_type, *, exceptions = None) -> object:
+    if exceptions is None:
+        exceptions = []
+    try:
+        derived = obj
+        expected_type = strip_generics_from(expected_type)
+        for name in names:
+            if not derived.isinstance(dict):
+                raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {pretty_print_configobject(derived, expected=f'dictionary, got {type(derived.decay()).__name__}')}. (See example config.json!)")
+            derived = typing.cast(ConfigObject[dict], derived)
+            if not name in derived.decay():
+                likely_type = dict
+                if name == names[-1]:
+                    likely_type = expected_type
+                raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not found in tree {pretty_print_configobject(derived, doublequote(name) + f' (a {likely_type.__name__} value)')}. (See example config.json!)")
+            derived = derived[name]
+        if not derived.isinstance(expected_type):
+            raise ConfigTypeError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__} in tree {pretty_print_configobject(derived, expected_type.__name__)}")
+        if expected_type is list or expected_type is dict:
+            return derived
+        return derived.decay()
+    except ConfigTraversalError as e:
+        exceptions.append(e)
+        fallback = None
+        try:
+            fallback = obj._fallback
+        except Exception:
+            pass
+        if fallback is None:
+            collected: list = []
+            for exception in exceptions:
+                for val in exception.args:
+                    collected.append(val)
+                if exception is not exceptions[-1]:
+                    collected.append("\nA fallback config also encountered an error:\n")
+            raise type(e)(*tuple(collected))
+        return config_get_property(fallback, names, expected_type, exceptions=exceptions)
 
 def config_has_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> bool:
     try:
@@ -1019,7 +1081,7 @@ def config_has_property(obj: ConfigObject, names: list[str], expected_type: typi
         return False
 
 @typing.overload
-def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: None = None) -> None:
+def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: None = None) -> T | None:
     ...
 
 @typing.overload
@@ -1121,11 +1183,42 @@ FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
 say_sleep_ms = 0
 
+def _get_context_for_strerror(data: str, lineno: int, colno: int, context_lines: int) -> str:
+    lines = data.splitlines()
+    start = max(0, lineno - context_lines - 1)
+    end = min(len(lines), lineno + context_lines)
+
+    snippet = []
+    for i in range(start, end):
+        snippet.append(f"{i+1:4d} | {lines[i]}")
+
+        if i == lineno - 1:
+            pointer = "~" * ((colno + 7) // 2) + "^"  # 7 = prefix + line number + " | "
+            snippet.append(pointer)
+
+    return "\n".join(snippet)
+
 def load_settings_from_config():
     print(f"Loading from config...")
     config: ConfigObject
-    with io.open("config.json") as config_file:
-        config = ConfigObject(json.loads(config_file.read(-1)))
+    try:
+        try:
+            with io.open("userconfig.json", "r") as config_file:
+                config = ConfigObject(json.loads(config_file.read(-1)))
+        except IOError:
+            with io.open("userconfig.json", "w") as config_file:
+                config_file.write(json.dumps({}))
+                config = ConfigObject({})
+        with io.open("internals/config.json", "r") as config_file:
+            config.set_fallback(ConfigObject(json.loads(config_file.read(-1))))
+    except json.JSONDecodeError as e:
+        friendly_message = e.msg
+        for key, explanation in _JSON_FRIENDLY_ERROR_MAP.items():
+            if key in e.msg:
+                friendly_message = f"{explanation} (line {e.lineno}, column {e.colno})"
+                break
+        squiggler = _get_context_for_strerror(e.doc, e.lineno, e.colno, 2)
+        raise RuntimeError(f"JSON Decode Error at line {e.lineno}, column {e.colno}:\n{squiggler}\n{friendly_message}.")
     global verbose
     verbose = config_get_property(config, ["meta", "verbose"], bool)
     global allow_version_checking
@@ -1164,6 +1257,7 @@ def load_settings_from_config():
     global WORD_REPLACEMENTS
     WORD_REPLACEMENTS = config_get_property(config, ["output", "word_replacements"], dict[str, str]).decay()
     filters = config_get_property(config, ["filters"], dict[str, dict])
+    print(filters.decay())
     for name, filter in filters:
         has_single = config_has_property(filter, ["action"], str)
         has_double = config_has_property(filter, ["actions"], list)
@@ -1191,19 +1285,32 @@ def load_settings_from_config():
                         parsed_actions.append(SelfishAction(FILTERS, filter_to_apply))
                     else:
                         raise ConfigError(f"Attempted to create an action of type \"{type}\" with an invalid \"mode\" of \"{mode}\", expected \"enable\" or \"disable\" in tree {pretty_print_configobject(action, '')}")
-        activation = None
-        if config_has_property(filter, ["key_combination"], str) and config_get_property(filter, ["key_combination"], str).lower() != "unset":
-            activation = FilterActivation(config_get_property(filter, ["key_combination"], str),
-                                          config_get_property(filter, ["toggle"], bool), 
-                                          config_get_optional_property(filter, ["suppress"], bool))
+        activation = FilterActivation("unbound", True, True)
+        if config_has_property(filter, ["key_combination"], str):
+            activation.keybind = config_get_property(filter, ["key_combination"], str)
+        if config_has_property(filter, ["toggle"], bool):
+            activation.toggle = config_get_property(filter, ["toggle"], bool)
+        if config_has_property(filter, ["suppress"], bool):
+            activation.suppresses = config_get_property(filter, ["suppress"], bool)
         Filter(name, title, FILTERS, parsed_actions,
                config_get_optional_property(filter, ["group"], str, "default"),
                config_get_optional_property(filter, ["exclusive"], bool, False),
                activation,
                background=config_get_optional_property(filter, ["color"], str),
                text_color=config_get_optional_property(filter, ["text_color"], str))
-    
-    
+    filter_controls = config_get_optional_property(config, ["filter_controls"], dict[str, str])
+    if filter_controls is not None:
+        for filter_name, binding in filter_controls.items():
+            try:
+                filter = FILTERS.registered_filters[filter_name]
+            except KeyError:
+                raise ConfigError(f"Attempted to set the keybinding for filter \"{filter_name}\" to \"{binding}\", but said filter does not exist.")
+            if len(Pressable.parse_hotkey(binding)) == 0:
+                filter.activation_details = None
+            elif filter.activation_details is not None:
+                filter.activation_details.keybind = binding
+            else:
+                filter.activation_details = FilterActivation(binding, True, True)
 
 background = Configurable(root)
 label_background = Configurable(label)
@@ -1470,14 +1577,10 @@ def unblock_problematic_inputs():
         BLOCKED_KEYS_PRESS_RECORD = {}
         BLOCKED_KEYS_MASTERLIST = []
         for name in masterlist:
-            print(f" CTX Checking status of {name.name}")
             if name.was_modified:
-                print(f" CTX was modified")
                 if name.is_pressed:
-                    print(f" CTX should press")
                     press_key(name.name)
                 else:
-                    print(f" CTX should depress")
                     release_key(name.name)
 
 def submit():
@@ -1600,9 +1703,7 @@ def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool, dummy):
     bind = Pressable(MouseButton(button.name))
     allow_through = True
     with kblock:
-        print(f"pressed mb {bind}")
         if bind in BLOCKED_KEYS:
-            print(f"mb in blocke")
             allow_through = False
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
@@ -1636,7 +1737,6 @@ def translate_special_scancode(name: str, scancode: int) -> int:
 @must_recover()
 @synchronized_with(kblock)
 def on_key(event: keyboard.KeyboardEvent) -> bool:
-    print("HANDLE pressed", event.name, "down:", event.event_type == "down")
     if event.name is not None:
         bind = Pressable(KeyButton(translate_special_scancode(event.name, event.scan_code)))
     else:
@@ -1649,18 +1749,12 @@ def on_key(event: keyboard.KeyboardEvent) -> bool:
             for virtual in INPUTS_BY_PRESSABLE[bind]:
                 virtual.release()
     allow_through = True
-    print(f"trying bind {bind}")
     if bind in BLOCKED_KEYS:
-        print(f"bind was in")
         allow_through = False
         if event.event_type == "down":
             BLOCKED_KEYS_PRESS_RECORD[bind].press()
-            print(f"pressing")
         else:
             BLOCKED_KEYS_PRESS_RECORD[bind].release()
-            print(f"depressing")
-    else:
-        print(f"{bind} not in {BLOCKED_KEYS.keys()}")
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_key():
@@ -1763,12 +1857,9 @@ class FilterActivationCallback:
         self.pressed = True
         if self.get_activation_details().toggle:
             if not was_pressed:
-                print(f"And wasn't pressed {self.filter.title}")
                 if self.filter.manager.is_enabling(self.filter.name, "keypress"):
-                    print(f"So disabling {self.filter.title}")
                     self.filter.manager.disable_filter(self.filter.name, "keypress")
                 else:
-                    print(f"So enabling {self.filter.title}")
                     self.filter.manager.enable_filter(self.filter.name, "keypress")
         else:
             if not was_pressed:
@@ -1804,9 +1895,9 @@ def init():
             latest = latest_version()
             if version_greater(latest, current):
                 changelog = fetch_changelog()
-                text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config.ini file.\nPress OK to view the changelog."
+                text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config file. (meta -> enable_version_checking)\nPress OK to view the changelog."
                 if changelog.critical_updates is not None:
-                    text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config.ini file."
+                    text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config file. (meta -> enable_version_checking)"
                 spawn_thread(show_version_info, [text, changelog, current])
         except Exception as e:
             spawn_thread(messagebox.showerror, ["An error has occurred", f"Encountered {type(e).__name__} {e} while checking version."])
@@ -1818,7 +1909,8 @@ def init():
             time.sleep(0.5)
         time.sleep(0.5)
     for registered_filter in FILTERS.registered_filters.values():
-        if registered_filter.activation_details is None:
+        if registered_filter.activation_details is None or len(Pressable.parse_hotkey(registered_filter.activation_details.keybind)) == 0:
+            registered_filter.activation_details = None
             continue
         callback = FilterActivationCallback(registered_filter)
         set_control(registered_filter.activation_details.keybind,

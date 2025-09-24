@@ -2,12 +2,15 @@
     "input": {
         "activate": "x2",
         "reject": "x1",
+        "activate_globally_blocked": true,
         "radio_modifier": "ctrl",
         "autosend": true
     },
     "output": {
         "use_say_or_chat": "say",
-        "say_settings": {},
+        "say_settings": {
+            "delay_ms": 100
+        },
         "chat_settings": {
             "chat_key": "t",
             "chat_delay": 0.75
@@ -21,6 +24,7 @@
         "window_width": 300,
         "window_height": 100
     },
+    "skip_model_load": false,
     "filters": {
         "all_caps": {
             "title": "CAPS",
@@ -44,6 +48,9 @@
             "title": "Sec",
             "toggle": true,
             "color": "red",
+            "suppress": true,
+            "group": "radio",
+            "exclusive": true,
             "action": "filters/security.py"
         },
         "science_radio": {
@@ -51,12 +58,14 @@
             "toggle": true,
             "color": "purple",
             "text_color": "white",
+            "suppress": true,
+            "group": "radio",
+            "exclusive": true,
             "action": "filters/science.py"
         },
         "rage": {
             "title": "Rage",
             "toggle": true,
-            "key_combination": "`",
             "actions": [
                 {
                     "type": "filter",
@@ -67,6 +76,6 @@
                     "name": "excited"
                 }
             ]
-        }
+        } 
     }
 }

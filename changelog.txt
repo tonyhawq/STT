@@ -1,4 +1,21 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.15
+Date: 2025-9-23
+  Name:
+    - The Bugfix Update
+  Headline:
+    - Fixes a lot of bugs relating to inputs
+  Features:
+    - User configs are stored in userconfig.json
+    - Base configs are stored in internal/config.json
+    - If a key is not found in userconfigs, the loader searches in internal/config.json
+    - Controls for filters are set in "filter_controls", as a dict of "name": "keybind"
+    - To unset a keybind, just set it to "unbound"
+  Bugfixes:
+    - clicking while submitting say no longer clobbers the chatbar
+    - keys are blocked more robustly
+    - you no longer randomly walk down after submitting say
+---------------------------------------------------------------------------------------------------
 Version: 0.0.14
 Date: 2025-8-31
   Name:

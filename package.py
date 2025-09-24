@@ -21,7 +21,7 @@ class Packageable:
         return Packageable(path=path, ignore=ignore, is_dir=True)
 
 files_to_package: list[Packageable] = [
-    Packageable.file("config.json"),
+    Packageable.file("internals/config.json"),
     Packageable.file("example-config.json"),
     Packageable.file("readme.md"),
     Packageable.file("requirements.txt"),
