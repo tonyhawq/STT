@@ -11,6 +11,7 @@ Date: 2025-9-23
     - If a key is not found in userconfigs, the loader searches in internal/config.json
     - Controls for filters are set in "filter_controls", as a dict of "name": "keybind"
     - To unset a keybind, just set it to "unbound"
+    - Adds filters for missing departments and for binary
   Bugfixes:
     - clicking while submitting say no longer clobbers the chatbar
     - keys are blocked more robustly

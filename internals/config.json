@@ -44,6 +44,52 @@
                 }
             ]
         },
+        "binary_radio": {
+            "title": "Binary",
+            "toggle": true,
+            "color": "blue",
+            "suppress": true,
+            "group": "radio",
+            "exclusive": true,
+            "text_color": "white",
+            "action": "filters/binary.py"
+        },
+        "medical_radio": {
+            "title": "Med",
+            "toggle": true,
+            "color": "cyan",
+            "suppress": true,
+            "group": "radio",
+            "exclusive": true,
+            "action": "filters/medical.py"
+        },
+        "cargo_radio": {
+            "title": "Cargo",
+            "toggle": true,
+            "color": "saddle brown",
+            "suppress": true,
+            "group": "radio",
+            "exclusive": true,
+            "action": "filters/cargo.py"
+        },
+        "engineering_radio": {
+            "title": "Engi",
+            "toggle": true,
+            "color": "DarkOrange1",
+            "suppress": true,
+            "group": "radio",
+            "exclusive": true,
+            "action": "filters/engineering.py"
+        },
+        "command_radio": {
+            "title": "Command",
+            "toggle": true,
+            "color": "gold",
+            "suppress": true,
+            "group": "radio",
+            "exclusive": true,
+            "action": "filters/command.py"
+        },
         "security_radio": {
             "title": "Sec",
             "toggle": true,
