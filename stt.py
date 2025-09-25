@@ -50,11 +50,36 @@ V = typing.TypeVar('V')
 root = tk.Tk()
 root.title("Speech To Text")
 root.attributes("-topmost", True)
-root.geometry("300x100")
-label = tk.Label(root, text="Pre-Init", wraplength=290, justify="left", font=("Arial", 12))
+root.minsize(300, 100)
+label_frame = tk.Frame(root, width = 300, height = 100, bg="white")
+label_frame.pack_propagate(False)
+label_frame.pack(padx=0, pady=0)
+label = tk.Label(label_frame, text="Pre-Init", wraplength=290, justify="center", font=("Arial", 12))
 label.pack(expand=True)
 default_width = 300
 default_height = 100
+
+_registered_tk_hooks: dict[str, list[typing.Callable]] = {}
+
+def register_tkhook(name: str, func: typing.Callable):
+    hooks = _registered_tk_hooks.get(name, None)
+    if hooks is not None:
+        hooks.append(func)
+    else:
+        hooks = [func]
+        _registered_tk_hooks[name] = hooks
+        def _internal_tkhook(event):
+            for hook in hooks:
+                hook(event)
+        root.bind(name, _internal_tkhook)
+        
+
+def on_resize(event):
+    if event.widget != root:
+        return
+    label_frame.config(width=event.width, height=max(100, label_frame.winfo_height()))
+
+register_tkhook("<Configure>", on_resize)
 
 _skip_model_loading = False
 thread_context = threading.local()
@@ -181,6 +206,11 @@ def main_thread():
         return wrapper
     return decorator
 
+@main_thread()
+def on_force_geometry_change():
+    root.update_idletasks()
+    root.geometry(f"{root.winfo_reqwidth()}x{root.winfo_reqheight()}")
+
 class Configurable():
     def __init__(self, obj):
         self.obj = obj
@@ -298,7 +328,7 @@ class Filter:
         self.activation_details: FilterActivation | None = activated_by
         self.enabled_by: dict[str, bool] = {}
         self.manager.register(self)
-        self.display: ttk.Label | None = None
+        self.display: "SizedLabel | None" = None
 
     def on_enable(self):
         to_delete = []
@@ -313,35 +343,48 @@ class Filter:
 
     def __str__(self):
         return "Filter." + self.name
+
+class SizedLabel:
+    def __init__(self, parent, width, height, *args, **kwargs):
+        self.frame = tk.Frame(parent, width=width, height=height, bg="white")
+        self.label = tk.Label(self.frame, *args, **kwargs)
+        self.label.pack(padx=0, pady=0, fill="both", expand=True)
     
-@main_thread()
-def set_window_geometry(width, height):
-    root.update_idletasks()
-    if width is None:
-        width = root.winfo_width()
-    if height is None:
-        height = root.winfo_height()
-    root.geometry(f"{math.floor(width)}x{math.floor(height)}")
+    def destroy(self):
+        self.frame.destroy()
+
+    def grid(self, *args, **kwargs):
+        self.frame.grid(*args, **kwargs)
 
 class ExpandableColumnFlow:
     def __init__(self, parent, columns):
         self.lock = threading.Lock()
         self.grid = tk.Frame(parent)
         for col in range(columns):
-            self.grid.grid_columnconfigure(col, minsize=100)
-        self.grid.grid_rowconfigure(0, minsize=25)
+            self.grid.grid_columnconfigure(col, minsize=root.winfo_width() // columns)
         self.grid.pack()
         self.columns = columns
-        self.flat = []
+        self.flat: list[SizedLabel] = []
+        register_tkhook("<Configure>", self.root_resize_hook)
+        # I cant for the life of me figure out why this grid doesn't auto resize down to size 0
+        # After everything is deleted
+        # It starts out at size 0.. why can't it return to size 0?
+        # So instead of fixing it just force it to be broken at start
+        self.delete_button(self.add_button())
+
+    def root_resize_hook(self, event):
+        if event.widget != root:
+            return
+        for col in range(self.columns):
+            self.grid.grid_columnconfigure(col, minsize=event.width // self.columns)
 
     @main_thread()
     def get_height(self):
-        return math.floor(len(self.flat) / self.columns) * 25
+        return math.ceil(len(self.flat) / self.columns) * 25
 
     @main_thread()
-    def delete_button(self, widget: ttk.Label):
+    def delete_button(self, widget: SizedLabel):
         index: int | None = None
-        height_before = self.get_height()
         for i, other_widget in enumerate(self.flat):
             if other_widget == widget:
                 index = i
@@ -352,21 +395,26 @@ class ExpandableColumnFlow:
         for i in range(index, len(self.flat)):
             to_move = self.flat[i]
             to_move.grid(row=math.floor(i / self.columns), column=i % self.columns)
-        height_after = self.get_height()
-        set_window_geometry(None, root.winfo_height() - height_before + height_after)
+        for row in range(self.grid.grid_size()[1]):
+            if row * self.columns >= len(self.flat):
+                self.grid.grid_rowconfigure(row, minsize=0)
+        root.update_idletasks()
+        on_force_geometry_change()
         
     @main_thread()
-    def add_button(self):
-        height_before = self.get_height()
-        widget = ttk.Label(self.grid, anchor="center")
-        widget.grid(row=math.floor(len(self.flat) / self.columns), column=len(self.flat) % self.columns, sticky="nsew")
-        widget.config(background="green")
+    def add_button(self) -> SizedLabel:
+        widget = SizedLabel(self.grid, None, 25, anchor="center")
+        row = math.floor(len(self.flat) / self.columns)
+        column = len(self.flat) % self.columns
+        widget.grid(row=row, column=column, sticky="nsew")
+        self.grid.grid_rowconfigure(row, minsize=25)
+        widget.label.config(background="green")
         self.flat.append(widget)
-        height_after = self.get_height()
-        set_window_geometry(None, root.winfo_height() - height_before + height_after)
+        root.update_idletasks()
+        on_force_geometry_change()
         return widget
 
-DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)
+DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)#
 
 class FilterManager:
     def __init__(self, display: ExpandableColumnFlow):
@@ -395,7 +443,7 @@ class FilterManager:
             filter.on_enable()
             with self.display.lock:
                 filter.display = self.display.add_button()
-                filter.display.config(text=filter.title, background=filter.background, foreground=filter.text_color)
+                filter.display.label.config(text=filter.title, background=filter.background, foreground=filter.text_color)
             filter.enabled_by[source] = True
         self.enabled_filters[filter.name] = filter
         for action in filter.actions:
@@ -1235,7 +1283,7 @@ def load_settings_from_config():
     _skip_model_loading = config_get_property(config, ["skip_model_load"], bool) if config_has_property(config, ["skip_model_load"], bool) else False
     default_width = config_get_property(config, ["meta", "window_width"], int)
     default_height = config_get_property(config, ["meta", "window_height"], int)
-    root.geometry(str(int(default_width)) + "x" + str(int(default_height)))
+    root.minsize(default_width, default_height)
     global path_to_model
     path_to_model = config_get_property(config, ["meta", "path_to_model"], str)
     global autosend
@@ -1800,18 +1848,16 @@ def load_model(final: Box, can_spin: Box, loading_text: Box):
             allowed = True
         def on_deny():
             root.quit()
-        width = root.winfo_width()
-        height = root.winfo_height()
         allow = tk.Button(root, text="Allow", command=on_allow)
         deny = tk.Button(root, text="Deny", command=on_deny)
         allow.pack(padx=10, pady=10, side=tk.LEFT)
         deny.pack(padx=10, pady=10, side=tk.LEFT)
-        root.geometry(f"{width}x{height + 100}")
+        on_force_geometry_change()
         while not allowed:
             time.sleep(0.5)
         allow.destroy()
         deny.destroy()
-        root.geometry(f"{width}x{height}")
+        on_force_geometry_change()
         can_spin.value = True
         loading_text.value = "Downloading parakeet-tdt-0.6b-v2.nemo..."
         hf_hub_download(
