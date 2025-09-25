@@ -48,13 +48,14 @@ U = typing.TypeVar('U')
 V = typing.TypeVar('V')
 
 root = tk.Tk()
+root.config(bg="white")
 root.title("Speech To Text")
 root.attributes("-topmost", True)
 root.minsize(300, 100)
 label_frame = tk.Frame(root, width = 300, height = 100, bg="white")
 label_frame.pack_propagate(False)
 label_frame.pack(padx=0, pady=0)
-label = tk.Label(label_frame, text="Pre-Init", wraplength=290, justify="center", font=("Arial", 12))
+label = tk.Label(label_frame, text="Pre-Init", wraplength=290, bg="white", justify="center", font=("Arial", 12))
 label.pack(expand=True)
 default_width = 300
 default_height = 100
@@ -359,18 +360,17 @@ class SizedLabel:
 class ExpandableColumnFlow:
     def __init__(self, parent, columns):
         self.lock = threading.Lock()
-        self.grid = tk.Frame(parent)
-        for col in range(columns):
-            self.grid.grid_columnconfigure(col, minsize=root.winfo_width() // columns)
-        self.grid.pack()
+        self.parent_widget = parent
         self.columns = columns
         self.flat: list[SizedLabel] = []
+        self._generate_grid()
         register_tkhook("<Configure>", self.root_resize_hook)
-        # I cant for the life of me figure out why this grid doesn't auto resize down to size 0
-        # After everything is deleted
-        # It starts out at size 0.. why can't it return to size 0?
-        # So instead of fixing it just force it to be broken at start
-        self.delete_button(self.add_button())
+
+    def _generate_grid(self):
+        self.grid = tk.Frame(self.parent_widget)
+        for col in range(self.columns):
+            self.grid.grid_columnconfigure(col, minsize=root.winfo_width() // self.columns)
+        self.grid.pack()
 
     def root_resize_hook(self, event):
         if event.widget != root:
@@ -395,9 +395,10 @@ class ExpandableColumnFlow:
         for i in range(index, len(self.flat)):
             to_move = self.flat[i]
             to_move.grid(row=math.floor(i / self.columns), column=i % self.columns)
-        for row in range(self.grid.grid_size()[1]):
-            if row * self.columns >= len(self.flat):
-                self.grid.grid_rowconfigure(row, minsize=0)
+        if not self.flat:
+            # this is just the worst hack
+            self.grid.destroy()
+            self._generate_grid()
         root.update_idletasks()
         on_force_geometry_change()
         
@@ -407,7 +408,6 @@ class ExpandableColumnFlow:
         row = math.floor(len(self.flat) / self.columns)
         column = len(self.flat) % self.columns
         widget.grid(row=row, column=column, sticky="nsew")
-        self.grid.grid_rowconfigure(row, minsize=25)
         widget.label.config(background="green")
         self.flat.append(widget)
         root.update_idletasks()
@@ -1121,6 +1121,30 @@ def config_get_property(obj, names, expected_type, *, exceptions = None) -> obje
             raise type(e)(*tuple(collected))
         return config_get_property(fallback, names, expected_type, exceptions=exceptions)
 
+def config_meld_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> ConfigObject[T]:
+    collected_objs = []
+    fallback = obj
+    while fallback is not None:
+        collected_objs.append(fallback)
+        fallback = fallback._fallback
+    collected_objs.reverse()
+    if typing.get_origin(expected_type) is list or expected_type is list:
+        collected = []
+        for trying_obj in collected_objs:
+            gotten = config_get_property(trying_obj, names, expected_type)
+            for val in gotten: # type: ignore
+                collected.append(val)
+        return ConfigObject(collected, parent=obj, key="Meld of " + names[-1]) # type: ignore
+    elif typing.get_origin(expected_type) is dict or expected_type is dict:
+        collected = {}
+        for trying_obj in collected_objs:
+            gotten = config_get_property(trying_obj, names, expected_type)
+            for k, v in gotten.items():  # type: ignore
+                collected[k] = v
+        return ConfigObject(collected, parent=obj, key="meld of " + names[-1]) # type: ignore
+    raise ConfigError("Attempted to meld a non-iterable.")
+    
+
 def config_has_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> bool:
     try:
         config_get_property(obj, names, expected_type)
@@ -1304,8 +1328,7 @@ def load_settings_from_config():
         raise RuntimeError("Expected either \"say\" or \"chat\" as option for \"use_say_or_chat\" in \"output\"")
     global WORD_REPLACEMENTS
     WORD_REPLACEMENTS = config_get_property(config, ["output", "word_replacements"], dict[str, str]).decay()
-    filters = config_get_property(config, ["filters"], dict[str, dict])
-    print(filters.decay())
+    filters = config_meld_property(config, ["filters"], dict[str, dict])
     for name, filter in filters:
         has_single = config_has_property(filter, ["action"], str)
         has_double = config_has_property(filter, ["actions"], list)
@@ -1360,7 +1383,7 @@ def load_settings_from_config():
             else:
                 filter.activation_details = FilterActivation(binding, True, True)
 
-background = Configurable(root)
+background = Configurable(label_frame)
 label_background = Configurable(label)
 
 class State(Enum):
