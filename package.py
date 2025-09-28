@@ -25,6 +25,7 @@ files_to_package: list[Packageable] = [
     Packageable.file("example-config.json"),
     Packageable.file("readme.md"),
     Packageable.file("requirements.txt"),
+    Packageable.file("debug.bat"),
     Packageable.file("run.bat"),
     Packageable.file("setup.bat"),
     Packageable.file("stt.py"),

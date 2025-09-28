@@ -6,4 +6,3 @@ if exist venv (
 	echo !!Run setup.bat first!!
 	echo -----------------------
 )
-pause

@@ -51,14 +51,14 @@ root = tk.Tk()
 root.config(bg="white")
 root.title("Speech To Text")
 root.attributes("-topmost", True)
-root.minsize(300, 100)
-label_frame = tk.Frame(root, width = 300, height = 100, bg="white")
+DEFAULT_WINDOW_WIDTH = 300
+DEFAULT_WINDOW_HEIGHT = 100
+root.minsize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+label_frame = tk.Frame(root, width = DEFAULT_WINDOW_WIDTH, height = DEFAULT_WINDOW_HEIGHT, bg="white")
 label_frame.pack_propagate(False)
 label_frame.pack(padx=0, pady=0)
 label = tk.Label(label_frame, text="Pre-Init", wraplength=290, bg="white", justify="center", font=("Arial", 12))
 label.pack(expand=True)
-default_width = 300
-default_height = 100
 
 _registered_tk_hooks: dict[str, list[typing.Callable]] = {}
 
@@ -107,12 +107,12 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
 def _report_exception(e: Exception, context: str | None = None):
     root.after(0, _global_exception_handler, e, exception_to_filtered_traceback(e, context=context))
 
-def _thread_ctx(func: typing.Callable, context: str, args: list = []):
+def _thread_ctx(func: typing.Callable, context: str, *args, **kwargs):
     try:
         global thread_context
         thread_context.value = context
         verbose_print("calling", func, "with", args)
-        func(*args)
+        func(*args, **kwargs)
     except Exception as e:
         _report_exception(e, context)
         
@@ -172,14 +172,16 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: 
     filtered = filtered.removesuffix('\n') + '\n'
     return filtered
 
-def spawn_thread(func: typing.Callable, args: list = []):
+def spawn_thread(func: typing.Callable, *args, **kwargs):
     context = ""
     try:
         context = thread_context.value
     except:
         pass
     stack = context + filtered_traceback()
-    thread = threading.Thread(target=_thread_ctx, args=(func, stack, args), daemon=True)
+    def wrapped_thread_ctx():
+        _thread_ctx(func, stack, *args, **kwargs)
+    thread = threading.Thread(target=wrapped_thread_ctx, daemon=True)
     thread.start()
 
 def main_thread():
@@ -640,9 +642,10 @@ class ControlButton:
     def __init__(self, control: Pressable, action: typing.Callable, suppression_logic: typing.Callable[[], bool] | bool = False):
         self.control = control
         if isinstance(suppression_logic, bool):
-            def should_suppress():
-                return suppression_logic
-            self.should_suppress = should_suppress
+            if suppression_logic:
+                self.should_suppress = _literal_true
+            else:
+                self.should_suppress = _literal_false
         else:
             self.should_suppress = suppression_logic
         self._is_pressed = False
@@ -741,7 +744,7 @@ def fix_version_file():
     if bool(re.fullmatch(r'^\d+\.\d+\.\d+$', version)):
         # valid
         return
-    messagebox.showwarning("STT Version File Error", message=f"An invalid version was detected inside of the version file, expected x.x.x, got \"{version}\"")
+    spawn_thread(messagebox.showwarning, "STT Version File Error", message=f"An invalid version was detected inside of the version file, expected x.x.x, got \"{version}\"")
     os.remove("version.number")
     return fix_version_file()
 
@@ -1143,7 +1146,6 @@ def config_meld_property(obj: ConfigObject, names: list[str], expected_type: typ
                 collected[k] = v
         return ConfigObject(collected, parent=obj, key="meld of " + names[-1]) # type: ignore
     raise ConfigError("Attempted to meld a non-iterable.")
-    
 
 def config_has_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> bool:
     try:
@@ -1177,7 +1179,6 @@ class KeyCombinationControl:
         self.suppression_logic: bool | typing.Callable[[], bool] = _suppress
         if _suppress:
             def should_suppress():
-                print("should suppress", self._pressed_count == self._press_threshold)
                 return self._pressed_count == self._press_threshold
             self.suppression_logic = should_suppress
 
@@ -1209,6 +1210,9 @@ class KeyCombinationControl:
 def _literal_true():
     return True
 
+def _literal_false():
+    return False
+
 def _set_simple_control(aliases: list[Pressable], name: str, action: typing.Callable[[], None], release: typing.Callable[[], None] | None = None, _suppress: bool | typing.Callable[[], bool] = False):
     if name in CONTROLS:
         raise RuntimeError(f"Attempted to create duplicate control \"{name}\", a control already exists with this name.")
@@ -1221,13 +1225,19 @@ def _set_simple_control(aliases: list[Pressable], name: str, action: typing.Call
             button = CONTROLBUTTONS_BY_KEY[alias]
             button.add_press(control.press_hook)
             button.add_release(control.release_hook)
+            # because suppression is always an OR operation
+            # a literal true value will mean should_suppress always is true
+            # and a literal false has no effect
             if isinstance(_suppress, bool):
                 if _suppress:
                     button.should_suppress = _literal_true
-            else:
-                def supression_wrapper(func=_suppress, last_func=button.should_suppress):
-                    return func() or last_func()
-                button.should_suppress = supression_wrapper
+            elif button.should_suppress is not _literal_true:
+                if button.should_suppress is _literal_false:
+                    button.should_suppress = _suppress
+                else:
+                    def supression_wrapper(func=_suppress, last_func=button.should_suppress):
+                        return func() or last_func()
+                    button.should_suppress = supression_wrapper
         else:
             button = ControlButton(alias, action=control.press_hook, suppression_logic=_suppress)
             button.add_release(control.release_hook)
@@ -1301,13 +1311,16 @@ def load_settings_from_config():
     set_control(config_get_property(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler, _suppress=suppress_activate)
     set_control(config_get_property(config, ["input", "reject"], str), "reject", on_reject_press_handler, release=on_reject_release_handler)
     set_control(config_get_property(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
-    global default_width
-    global default_height
+    global DEFAULT_WINDOW_WIDTH
+    global DEFAULT_WINDOW_HEIGHT
     global _skip_model_loading
     _skip_model_loading = config_get_property(config, ["skip_model_load"], bool) if config_has_property(config, ["skip_model_load"], bool) else False
-    default_width = config_get_property(config, ["meta", "window_width"], int)
-    default_height = config_get_property(config, ["meta", "window_height"], int)
-    root.minsize(default_width, default_height)
+    DEFAULT_WINDOW_WIDTH = config_get_property(config, ["meta", "window_width"], int)
+    DEFAULT_WINDOW_HEIGHT = config_get_property(config, ["meta", "window_height"], int)
+    label_frame.config(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
+    root.minsize(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
+    on_force_geometry_change()
+
     global path_to_model
     path_to_model = config_get_property(config, ["meta", "path_to_model"], str)
     global autosend
@@ -1945,7 +1958,7 @@ class FilterActivationCallback:
                 self.filter.manager.disable_filter(self.filter.name, "keypress")
 
 def init():
-    ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6)
+    ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6) # hide console
     wheel = "-"
     loading_finished = Box(False)
     can_spin = Box(False)
@@ -1957,7 +1970,8 @@ def init():
     free_ram = psutil.virtual_memory().available
     required_ram = 5 * 1024**3 # 5GB
     if free_ram < required_ram:
-        messagebox.showerror("Low system memory", f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
+        spawn_thread(messagebox.showerror, "Low system memory",
+                     f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
     if allow_version_checking:
         try:
             current = current_version()
@@ -1967,10 +1981,10 @@ def init():
                 text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config file. (meta -> enable_version_checking)\nPress OK to view the changelog."
                 if changelog.critical_updates is not None:
                     text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config file. (meta -> enable_version_checking)"
-                spawn_thread(show_version_info, [text, changelog, current])
+                spawn_thread(show_version_info, text, changelog, current)
         except Exception as e:
-            spawn_thread(messagebox.showerror, ["An error has occurred", f"Encountered {type(e).__name__} {e} while checking version."])
-    spawn_thread(load_model, args=[loading_finished, can_spin, loading_text])
+            spawn_thread(messagebox.showerror, "An error has occurred", f"Encountered {type(e).__name__} {e} while checking version.")
+    spawn_thread(load_model, loading_finished, can_spin, loading_text)
     while not loading_finished.value:
         while can_spin.value and not loading_finished.value:
             wheel = advance_wheel(wheel)

@@ -1,4 +1,16 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.16
+Date: 2025-9-28
+  Name:
+    - The Window Resizing Update
+  Headline:
+    - The window resizes properly
+  Features:
+    - adds config_meld_property which allows you to not have to copy the entire table into userconfig.json
+  Bugfixes:
+    - The window doesn't grow forever when triggering multilayer filters
+    - The window can be resized with the mouse
+---------------------------------------------------------------------------------------------------
 Version: 0.0.15
 Date: 2025-9-23
   Name:
