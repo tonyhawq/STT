@@ -1,12 +1,15 @@
 ---------------------------------------------------------------------------------------------------
 Version: 0.0.18
-Date: 2026-6-7
+Date: 2026-6-8
   Name:
     - The HWND update
   Headline:
     - Adds a super-low-latency chat option
   Features:
     - Adds a chat submission option that directly sets the value of the input box
+  Bugfixes:
+    - Fixes a few edge cases surrounding inputs being blocked and never unblocked
+    - Fixes some tkinter gui updates not happening on the main thread
 ---------------------------------------------------------------------------------------------------
 Version: 0.0.17
 Date: 2026-6-6
