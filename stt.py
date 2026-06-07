@@ -1074,7 +1074,7 @@ def fetch_changelog() -> Changelog:
     print(raw_log)
     return Changelog.parse(raw_log, release_version)
 
-def latest_version():
+def latest_version() -> str:
     url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
     try:
         response = requests.get(url, timeout=1)
@@ -1083,11 +1083,11 @@ def latest_version():
         return "0.0.0"
     if response.status_code != 200:
         messagebox.showwarning("STT Response Error", message=f"Could not fetch latest version from github, got {response.status_code}")
-        return False
+        return "0.0.0"
     latest = response.json()["tag_name"]
     return latest
 
-def version_greater(v1, v2):
+def version_greater(v1: str, v2: str) -> bool:
     t1 = tuple(map(int, v1.split(".")))
     t2 = tuple(map(int, v2.split(".")))
     return t1 > t2
@@ -1141,113 +1141,6 @@ class ConfigTypeError(ConfigError):
 class ConfigTraversalError(ConfigError):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-def strip_generics_from(tval):
-    origin = getattr(tval, '__origin__', None)
-    if origin is None:
-        return tval
-    return origin
-
-class ConfigObject(typing.Generic[T]):
-    def __init__(self, value: T, parent:"ConfigObject|None" = None, key:str|None = None):
-        if isinstance(value, ConfigObject):
-            raise RuntimeError()
-        self._value: T = value
-        self._parent = parent
-        self._key = key
-        self._fallback = None
-
-    def set_fallback(self, obj: "ConfigObject"):
-        self._fallback = obj
-    
-    def __getattr__(self, attr):
-        return getattr(self._value, attr)
-    
-    def __setattr__(self, attr, val):
-        if attr.startswith("_"):
-            super().__setattr__(attr, val)
-        else:
-            setattr(self._value, attr, val)
-
-    def __getitem__(self, key):
-        return ConfigObject(self._value[key], parent=self, key=key) # type: ignore
-
-    @typing.overload
-    def __iter__(self: "ConfigObject[list[V]]") -> typing.Iterator["ConfigObject[V]"]:
-        ...
-    
-    @typing.overload
-    def __iter__(self: "ConfigObject[dict[V, U]]") -> typing.Iterator["typing.Tuple[V, ConfigObject[U]]"]:
-        ...
-
-    def __iter__(self) -> object:
-        if self.isinstance(dict):
-            for key, val in self._value.items(): #type: ignore
-                yield key, ConfigObject(val, self, key)
-            return
-        elif self.isinstance(list):
-            for k, item in enumerate(self._value): #type: ignore
-                yield ConfigObject(item, self, str(k))
-            return
-        raise RuntimeError("Attempted to call __iter__ on non-list/dict ConfigObject")
-    
-    def __len__(self):
-        return len(self._value) #type: ignore
-
-    def isinstance(self, type):
-        return isinstance(self._value, type)
-    
-    def decay_fully(self):
-        val = self
-        while isinstance(val, ConfigObject):
-            val = self.decay()
-        return val
-
-    def decay(self):
-        return self._value
-
-def pretty_print_configobject(bottom: ConfigObject, expected: str):
-    chain: list[ConfigObject] = []
-    current = bottom
-    while not current is None:
-        chain.append(current)
-        current = current._parent
-    chain.reverse()
-    out = []
-    is_dict = True
-    def is_last(i):
-        return i == len(chain) - 1
-    for i, obj in enumerate(chain):
-        indent = " " * (i * 2)
-        key = ('root' if obj._parent is None else '???') if obj._key is None else str(obj._key)
-        if is_dict:
-            out.append(f"\n{indent}\"{key}\": ")
-        else:
-            out.append(f"\n{indent}[{key}]: ")
-        is_dict = obj.isinstance(dict)
-        if obj.isinstance(list):
-            out.append("[")
-        elif obj.isinstance(dict):
-            out.append("{")
-        else:
-            out.append(str(obj._value))
-        if is_last(i):
-            out.append(f"\n{indent}{'  '}Expected {expected}\n")
-    chain.reverse()
-    for j, obj in enumerate(chain):
-        i = len(chain) - j
-        indent = " " * (i * 2)
-        out.append(indent)
-        if obj.isinstance(list):
-            out.append("]\n")
-        elif obj.isinstance(dict):
-            out.append("}\n")
-        else:
-            out.append("\n")
-    return "".join(out)
-
-def doublequote(val: str) -> str:
-    return f"\"{val}\""
 
 class KeyCombinationControl:
     def __init__(self, bind: "list[list[Pressable]]", press: typing.Callable, release: typing.Callable, _suppress: bool = False):
