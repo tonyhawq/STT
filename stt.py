@@ -1932,11 +1932,7 @@ def unblock_problematic_inputs():
                     press_key(name.name)
                 else:
                     release_key(name.name)
-
-@main_thread
-def label_config(text: str):
-    label.config(text=text)
-
+                    
 def submit():
     global state
     if state != State.ACCEPTING:
@@ -1945,7 +1941,7 @@ def submit():
     with STATUS_LOCK:
         transcript = TRANSCRIBED
     _finalize_process()
-    label_config(text=transcript)
+    tk_config(label, text=transcript)
     print("--- Submitting transcript")
     colorize("green", 1)
     block_problematic_inputs()
