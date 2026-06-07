@@ -13,3 +13,5 @@ temp/*
 changelog.local
 embedded/*
 userconfig.json
+userconfig.toml
+filters.toml

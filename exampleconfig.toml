@@ -1,0 +1,54 @@
+# Key names:
+# x1 (thumb button 1) x2 (thumb button 2)
+
+[input]
+# Hold this key to record voice data
+activate = "x2"
+# Press this key any time during the
+# sending process to cancel
+reject = "x1"
+activate_globally_blocked = true
+radio_modifier = "ctrl"
+autosend = true
+# Keys that are blocked during chat/say
+# Add more here if you consistenly mess up what you're trying to say
+blocked_keys = [
+    "w", "a", "s", "d", "e", "q", "z", "x",
+    "lmb", "rmb", "ctrl", "alt", "space"
+]
+
+[output]
+# Choose between "say" or "chat"
+# Say is generally better; less latency,
+# fewer issues.
+output_method = "say"
+
+[output.say_settings]
+# Delay between opening the window and
+# sending the message. Increase this
+# if you run into issues.
+delay_ms = 100
+
+[output.chat_settings]
+chat_key = "t"
+# Delay between opening chat and
+# sending the message. Increase
+# this if you run into issues.
+chat_delay = 0.75
+
+[meta]
+# Debug option. Disables the speech to text function
+# of this speech to text app.
+skip_model_load = false
+# Where is the STT model file located?
+path_to_model = "model/"
+# Warns you if the model is loaded to the CPU
+# instead of the GPU. Disable if you don't
+# have an NVIDIA card or don't care about
+# decode speeds.
+warn_on_cpu = true
+# Enable/disable version checking
+enable_version_checking = true
+window_width = 300
+window_height = 100
+verbose = false

@@ -1,4 +1,22 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.17
+Date: 2026-6-6
+  Name:
+    - The config redo update
+  Headline:
+    - The config file is now toml
+  Features:
+    - Adds a PyTorch installer for CUDA
+    - The changelog now shows the console output while loading
+    - setup.bat now has important text highlighted
+  Changes:
+    - userconfig and example_config are now .toml files
+    - Filters have been moved to their own file
+  Bugfixes:
+    - Many issues surrounding config loading have been fixed due to removing config melding
+    - Moves all tkinter gui updates to the main thread
+    - Exception warning boxes don't stack on top of eachother
+---------------------------------------------------------------------------------------------------
 Version: 0.0.16
 Date: 2025-9-28
   Name:

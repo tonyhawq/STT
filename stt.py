@@ -1,15 +1,15 @@
 import sys
 print(sys.path)
+print("Starting...")
 try:
-    import tkinter as tk
-    from tkinter import messagebox
+    print("Importing utilities...")
     import threading
     import pynput
     import string
     import pyaudio
     import time
     import wave
-    import json
+    import tomllib
     import typing
     import pyperclip
     import keyboard
@@ -19,16 +19,22 @@ try:
     import io
     import requests
     import uuid
+    import subprocess
     import functools
     import math
     import types
     import pynput._util.win32
     import importlib.util
-    from tkinter import ttk
+    import ctypes.wintypes
     from enum import Enum
-    from huggingface_hub import hf_hub_download
     import traceback
     import re
+    print("Importing gui...")
+    import tkinter as tk
+    from tkinter import messagebox
+    import tkinter.ttk as ttk
+    print("Importing STT architecture...")
+    from huggingface_hub import hf_hub_download
 except ImportError as e:
     print("An error occurred on startup!")
     print("-" * 30)
@@ -43,9 +49,26 @@ except ImportError as e:
         pass
     sys.exit(-1)
 
+FINAL_FATAL_MESSAGE: str | None = None
+
+def quit_normal():
+    root.destroy()
+
+def quit_with_errorbox(message):
+    global FINAL_FATAL_MESSAGE
+    FINAL_FATAL_MESSAGE = message
+    root.destroy()
+
+print("Finished importing libraries.")
+
 T = typing.TypeVar('T')
 U = typing.TypeVar('U')
 V = typing.TypeVar('V')
+
+CONFIG_FILENAME = "userconfig.toml"
+CONFIG_BACKUP_FILENAME = "exampleconfig.toml"
+FILTERCONFIG_FILENAME = "filters.toml"
+FILTERCONFIG_BACKUP_FILENAME = "examplefilters.toml"
 
 root = tk.Tk()
 root.config(bg="white")
@@ -78,6 +101,7 @@ def register_tkhook(name: str, func: typing.Callable):
 def on_resize(event):
     if event.widget != root:
         return
+    # This a tk hook, so it's on the main thread
     label_frame.config(width=event.width, height=max(100, label_frame.winfo_height()))
 
 register_tkhook("<Configure>", on_resize)
@@ -86,9 +110,135 @@ _skip_model_loading = False
 thread_context = threading.local()
 verbose = False
 
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.DWORD),
+        ("rcMonitor", ctypes.wintypes.RECT),
+        ("rcWork", ctypes.wintypes.RECT),
+        ("dwFlags", ctypes.wintypes.DWORD),
+    ]
+
+_warningbox_xvel = 0
+_warningbox_yvel = 0
+
+def showwarning_at(title: str, message: str, x: int | None, y: int | None) -> tuple[int, int]:
+    global _warningbox_xvel
+    global _warningbox_yvel
+    unique_title = f"{title} : {uuid.uuid4()}"
+    @main_thread
+    def show_box():
+        messagebox.showwarning(unique_title, message)
+    spawn_thread(show_box)
+    hwnd = None
+    for _ in range(500):
+        hwnd = ctypes.windll.user32.FindWindowW("#32770", unique_title)
+        if hwnd:
+            break
+        time.sleep(0.01)
+    if hwnd is None:
+        print(f"Couldn't find warning box {unique_title}!")
+        return (0, 0)
+    
+    rect = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+
+    if x is None or y is None:
+        _warningbox_xvel = 10
+        _warningbox_yvel = 10
+        return (rect.left, rect.top)
+
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+
+    ctypes.windll.user32.MoveWindow(
+        hwnd,
+        x,
+        y,
+        width,
+        height,
+        True,
+    )
+    
+    monitor = ctypes.windll.user32.MonitorFromWindow(
+        hwnd,
+        2  # MONITOR_DEFAULTTONEAREST
+    )
+    info = MONITORINFO()
+    info.cbSize = ctypes.sizeof(info)
+    ctypes.windll.user32.GetMonitorInfoW(
+        monitor,
+        ctypes.byref(info)
+    )
+    left = typing.cast(int, info.rcMonitor.left)
+    top = typing.cast(int, info.rcMonitor.top)
+    right = typing.cast(int, info.rcMonitor.right)
+    bottom = typing.cast(int, info.rcMonitor.bottom)
+
+    x += _warningbox_xvel
+    y += _warningbox_yvel
+    if x + width >= right:
+        x = right - width
+        _warningbox_xvel = -abs(_warningbox_xvel)
+    elif x <= left:
+        x = left
+        _warningbox_xvel = abs(_warningbox_xvel)
+    if y + height >= bottom:
+        y = bottom - height
+        _warningbox_yvel = -abs(_warningbox_yvel)
+    elif y <= top:
+        y = top
+        _warningbox_yvel = abs(_warningbox_yvel)
+    return (x, y)
+
+def main_thread(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if threading.current_thread() is threading.main_thread():
+            return func(*args, **kwargs)
+        result = Box[typing.Any](None)
+        error = Box[Exception | None](None)
+        event = threading.Event()
+        def sync():
+            try:
+                result.value = func(*args, **kwargs)
+            except Exception as e:
+                error.value = e
+            finally:
+                event.set()
+        root.after(0, sync)
+        event.wait()
+        if error.has_value():
+            raise error.value # type: ignore
+        else:
+            return result.value
+    return wrapper
+
+def main_thread_async(func):
+    def wrapper(*args, **kwargs):
+        if threading.current_thread() is threading.main_thread():
+            raise RuntimeError("Attempted to asynchronously call a function that is annotated as main_thread while in the main thread")
+        def afterwrapper():
+            func(*args, **kwargs)
+        root.after(0, afterwrapper)
+    return wrapper
+
 def verbose_print(*args, **kwargs):
     if verbose:
         print(*args, **kwargs)
+
+MBOX_POS: None | tuple[int, int] = None
+LAST_MBOX_TIME = 0
+MBOX_COUNT = 0
+CAN_SHOW_MBOX = True
+max_mbox_count = 20
+max_mbox_reset_time = 1
+
+def _mbox_time_elapsed():
+    return time.time() - LAST_MBOX_TIME
+
+def _set_mbox_time():
+    global LAST_MBOX_TIME
+    LAST_MBOX_TIME = time.time()
 
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
@@ -99,10 +249,32 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
         with io.open(filename, "w") as log:
             log.write(context)
         message = f"{type(exception).__name__}:\n{exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
-        messagebox.showwarning("Exception encountered", message=message)
+        def show_mbox():
+            global MBOX_POS
+            global CAN_SHOW_MBOX
+            global MBOX_COUNT
+            if not CAN_SHOW_MBOX:
+                return
+            if _mbox_time_elapsed() > max_mbox_reset_time:
+                MBOX_COUNT = 0
+            if _mbox_time_elapsed() > 5:
+                MBOX_POS = None
+            if MBOX_POS is None:
+                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = None, y = None)
+            else:
+                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = MBOX_POS[0], y = MBOX_POS[1])
+            MBOX_COUNT += 1
+            if MBOX_COUNT > max_mbox_count:
+                CAN_SHOW_MBOX = False
+                errorstr = f"FATAL: encountered {MBOX_COUNT} exceptions within {max_mbox_reset_time} second{'' if max_mbox_reset_time == 1 else 's'}, terminating program early."
+                print(errorstr)
+                quit_with_errorbox(errorstr)
+            _set_mbox_time()
+        queue_deferred(show_mbox)
     except Exception as e:
-        print(f"Fatal error encountered while processing {type(exception).__name__} ({exception}): {type(e).__name__}: {e}")
-        quit()
+        errorstr = f"FATAL: error encountered while processing {type(exception).__name__} ({exception}): {type(e).__name__}: {e}"
+        print(errorstr)
+        quit_with_errorbox(errorstr)
 
 def _report_exception(e: Exception, context: str | None = None):
     root.after(0, _global_exception_handler, e, exception_to_filtered_traceback(e, context=context))
@@ -140,7 +312,32 @@ def exception_to_filtered_traceback(e: Exception, context: str | None = None) ->
         else:
             cause = None
     return '\n'.join(filtered)
-    
+
+_deferred_queue: list[typing.Callable] = []
+_deferred_queue_access = threading.RLock()
+_deferred_queue_begin = threading.Event()
+
+def _deferred_queue_worker():
+    global _deferred_queue
+    while True:
+        _deferred_queue_begin.wait()
+        owned_funcs = []
+        with _deferred_queue_access:
+            _deferred_queue_begin.clear()
+            owned_funcs = _deferred_queue
+            _deferred_queue = []
+        for func in owned_funcs:
+            func()
+
+def queue_deferred(func: typing.Callable, *args, **kwargs):
+    with _deferred_queue_access:
+        def wrapper():
+            try:
+                func(*args, **kwargs)
+            except Exception as e:
+                _global_exception_handler(e, "Exception encountered in deferred queue.")
+        _deferred_queue.append(wrapper)
+        _deferred_queue_begin.set()
 
 def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: int|None = None) -> str:
     stack: traceback.StackSummary
@@ -183,33 +380,10 @@ def spawn_thread(func: typing.Callable, *args, **kwargs):
         _thread_ctx(func, stack, *args, **kwargs)
     thread = threading.Thread(target=wrapped_thread_ctx, daemon=True)
     thread.start()
+    
+spawn_thread(_deferred_queue_worker)
 
-def main_thread():
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            if threading.current_thread() is threading.main_thread():
-                return func(*args, **kwargs)
-            result = Box[typing.Any](None)
-            error = Box[Exception | None](None)
-            event = threading.Event()
-            def sync():
-                try:
-                    result.value = func(*args, **kwargs)
-                except Exception as e:
-                    error.value = e
-                finally:
-                    event.set()
-            root.after(0, sync)
-            event.wait()
-            if error.has_value():
-                raise error.value # type: ignore
-            else:
-                return result.value
-        return wrapper
-    return decorator
-
-@main_thread()
+@main_thread
 def on_force_geometry_change():
     root.update_idletasks()
     root.geometry(f"{root.winfo_reqwidth()}x{root.winfo_reqheight()}")
@@ -222,12 +396,13 @@ class Configurable():
     def dirtied_by(self):
         return self.m_dirtied_by
     
-    @main_thread()
+    @main_thread
     def config(self, **kwargs):
         self.obj.config(**kwargs) # type: ignore
         self.m_dirtied_by = time.time()
         return self.m_dirtied_by
 
+    @main_thread
     def config_and_apply(self, **kwargs) -> typing.Callable[[typing.Callable[[typing.Any], None], float], None]:
         dirtied_by = self.config(**kwargs)
         def apply(callable, after):
@@ -238,6 +413,10 @@ class Configurable():
                 callable(self.obj)
             spawn_thread(callable_wrapper)
         return apply
+
+@main_thread_async
+def tk_config(obj, **kwargs):
+    obj.config(**kwargs)
 
 class ApplyableAction:
     def __init__(self, name: str, manager: "FilterManager"):
@@ -310,7 +489,7 @@ class SelfishAction(InceptionAction):
         self.manager.force_disable_filter(self.filter)
     
     def __repr__(self):
-        return "SelifshAction." + self.name
+        return "SelfishAction." + self.name
 
 class FilterActivation:
     def __init__(self, keybind: str, toggle: bool, suppresses: bool | None = None):
@@ -380,11 +559,11 @@ class ExpandableColumnFlow:
         for col in range(self.columns):
             self.grid.grid_columnconfigure(col, minsize=event.width // self.columns)
 
-    @main_thread()
+    @main_thread
     def get_height(self):
         return math.ceil(len(self.flat) / self.columns) * 25
 
-    @main_thread()
+    @main_thread
     def delete_button(self, widget: SizedLabel):
         index: int | None = None
         for i, other_widget in enumerate(self.flat):
@@ -404,7 +583,7 @@ class ExpandableColumnFlow:
         root.update_idletasks()
         on_force_geometry_change()
         
-    @main_thread()
+    @main_thread
     def add_button(self) -> SizedLabel:
         widget = SizedLabel(self.grid, None, 25, anchor="center")
         row = math.floor(len(self.flat) / self.columns)
@@ -445,7 +624,7 @@ class FilterManager:
             filter.on_enable()
             with self.display.lock:
                 filter.display = self.display.add_button()
-                filter.display.label.config(text=filter.title, background=filter.background, foreground=filter.text_color)
+                tk_config(filter.display.label, text=filter.title, background=filter.background, foreground=filter.text_color)
             filter.enabled_by[source] = True
         self.enabled_filters[filter.name] = filter
         for action in filter.actions:
@@ -496,7 +675,7 @@ class FilterManager:
         for action in self.enabled_actions.values():
             input = action.transform(input)
             if not isinstance(input, str):
-                raise RuntimeError(f"Malformed plugin {action.name}: returned {type(result)} instead of str.")
+                raise RuntimeError(f"Malformed plugin {action.name}: returned {type(input)} instead of str.")
         return input
 
 audio = pyaudio.PyAudio()
@@ -719,6 +898,7 @@ class Control:
 autosend = False
 use_say = False
 allow_version_checking = True
+allow_cpu_asr = True
 chat_delay = 0
 chat_key = ""
 
@@ -765,7 +945,7 @@ class Changelog:
         self.categories = categories
     
     @staticmethod
-    @main_thread()
+    @main_thread
     def show_logs(logs: list["Changelog"]):
         window = tk.Toplevel()
         window.title(f"Changelog")
@@ -791,7 +971,7 @@ class Changelog:
             text.insert(f"{line}.0", f"{log.headline}\n", "bold")
             line = line + 1
             if log.critical_updates is not None:
-                text.insert("5.0", "Critical updates:\n", "bold")
+                text.insert(f"{line}.0", "Critical updates:\n", "bold")
                 line = line + 1
                 for update in log.critical_updates:
                     text.insert(f"{line}.0", f"  - {update}\n")
@@ -827,27 +1007,53 @@ class Changelog:
         return Changelog(version=version, date=str(re.findall(r"Date: (.*?)\n", input[index:header_idx])[0]), name=name, headline=headline, critical_updates=critical_updates, categories=categories)
 
 def show_changelogs_after(current: str):
+    @main_thread
+    def create_window() -> typing.Tuple[tk.Toplevel, tk.Text]:
+        window = tk.Toplevel()
+        window.title(f"Changelog")
+        window.geometry(f"600x600+{window.winfo_screenwidth() // 2 - 600 // 2}+{window.winfo_screenheight() // 2 - 600 // 2}")
+        text_log = tk.Text(window, wrap="word")
+        text_log.pack(fill="both", expand=True)
+        text_log.config(state="disabled")
+        return (window, text_log)
+    window, text_log = create_window()
+    @main_thread
+    def dblprint(val: str):
+        text_log.config(state="normal")
+        text_log.insert(tk.END, val + "\n")
+        text_log.see(tk.END)
+        text_log.config(state="disabled")
+        print(val)
     url = "https://api.github.com/repos/tonyhawq/STT/releases"
+    dblprint(f"Getting releases from {url}...")
     response = requests.get(url, timeout=5)
     releases = response.json()
     logs = []
     for release in releases:
+        dblprint(f"Scanning {release['tag_name']} for changelog...")
         version = release['tag_name']
         if not version_greater(version, current):
             continue
+        dblprint(f"Getting assets...")
         for asset in release.get("assets", []):
             if asset["name"] == "changelog.txt":
                 changelog_url = asset["browser_download_url"]
+                dblprint(f"Got url for changelog at {changelog_url}, downloading...")
                 try:
                     raw_log = requests.get(changelog_url).text
+                    dblprint(f"Parsing {release['tag_name']}...")
                     logs.append(Changelog.parse(raw_log, version))
                 except Exception as e:
-                    print(e)
+                    dblprint(f"Encountered an exception: {e}")
+    @main_thread
+    def destroy_window():
+        window.destroy()
+    destroy_window()
     Changelog.show_logs(logs)
 
 def show_version_info(text: str, changelog: Changelog, version: str):
-    res = messagebox.showinfo("New Version Available", text, type=messagebox.OKCANCEL) #type: ignore
-    if res == messagebox.OK:
+    res = messagebox.askyesno("New Version Available", text, type=messagebox.YESNO) #type: ignore
+    if res:
         show_changelogs_after(version)
         
 def fetch_changelog() -> Changelog:
@@ -909,7 +1115,6 @@ INPUTS_BY_PRESSABLE: dict[Pressable, list[VirtualNamedInput]] = {}
 INPUTS_BY_NAME: dict[str, VirtualNamedInput] = {}
 CONTROLS: dict[str, Control] = {}
 CONTROLBUTTONS_BY_KEY: dict[Pressable, ControlButton] = {}
-WORD_REPLACEMENTS: dict[str, str] = {}
 
 def populate_named_inputs():
     inputs_to_name = list(string.ascii_lowercase)
@@ -1041,133 +1246,6 @@ def pretty_print_configobject(bottom: ConfigObject, expected: str):
 def doublequote(val: str) -> str:
     return f"\"{val}\""
 
-_JSON_FRIENDLY_ERROR_MAP = {
-    "Expecting property name enclosed in double quotes":
-        "Trailing comma or missing key quotes (remove any trailing commas, and make sure keys are in double quotes).",
-
-    "Unterminated string starting at":
-        "Unterminated string. Make sure all strings are enclosed in double quotes and properly closed.",
-
-    "Expecting ',' delimiter":
-        "Missing comma between items.",
-
-    "Expecting ':' delimiter":
-        "Missing colon after a key. Use \"key\": value.",
-
-    "Extra data":
-        "Extra data found after valid JSON. Remove any trailing characters outside the main object/array.",
-
-    "Invalid control character":
-        "Invalid control character in string. Check for unescaped characters like newlines inside strings.",
-
-    "Invalid \\escape":
-        "Invalid escape sequence in string. Use valid escapes like \\n, \\t, \\\".",
-
-    "Expecting value":
-        "Missing or invalid value. Examples of valid values: string, float, int, array, true, false, null.",
-
-    "Expecting ',' or '}'":
-        "Trailing comma before closing brace or missing comma between object items.",
-
-    "Expecting ',' or ']'":
-        "Trailing comma before closing bracket or missing comma between array items."
-}
-
-
-@typing.overload
-def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[list[T]], *, exceptions: list[Exception] | None = None) -> ConfigObject[list[T]]:
-    ...
-
-@typing.overload
-def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[dict[T, U]], *, exceptions: list[Exception] | None = None) -> ConfigObject[dict[T, U]]:
-    ...
-
-@typing.overload
-def config_get_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], *, exceptions: list[Exception] | None = None) -> T:
-    ...
-
-def config_get_property(obj, names, expected_type, *, exceptions = None) -> object:
-    if exceptions is None:
-        exceptions = []
-    try:
-        derived = obj
-        expected_type = strip_generics_from(expected_type)
-        for name in names:
-            if not derived.isinstance(dict):
-                raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not a dictionary in tree {pretty_print_configobject(derived, expected=f'dictionary, got {type(derived.decay()).__name__}')}. (See example config.json!)")
-            derived = typing.cast(ConfigObject[dict], derived)
-            if not name in derived.decay():
-                likely_type = dict
-                if name == names[-1]:
-                    likely_type = expected_type
-                raise ConfigTraversalError(f"Could not get value of option {names[-1]}, {name} was not found in tree {pretty_print_configobject(derived, doublequote(name) + f' (a {likely_type.__name__} value)')}. (See example config.json!)")
-            derived = derived[name]
-        if not derived.isinstance(expected_type):
-            raise ConfigTypeError(f"Option {names[-1]} was not a {expected_type.__name__}, but a {type(derived).__name__} in tree {pretty_print_configobject(derived, expected_type.__name__)}")
-        if expected_type is list or expected_type is dict:
-            return derived
-        return derived.decay()
-    except ConfigTraversalError as e:
-        exceptions.append(e)
-        fallback = None
-        try:
-            fallback = obj._fallback
-        except Exception:
-            pass
-        if fallback is None:
-            collected: list = []
-            for exception in exceptions:
-                for val in exception.args:
-                    collected.append(val)
-                if exception is not exceptions[-1]:
-                    collected.append("\nA fallback config also encountered an error:\n")
-            raise type(e)(*tuple(collected))
-        return config_get_property(fallback, names, expected_type, exceptions=exceptions)
-
-def config_meld_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> ConfigObject[T]:
-    collected_objs = []
-    fallback = obj
-    while fallback is not None:
-        collected_objs.append(fallback)
-        fallback = fallback._fallback
-    collected_objs.reverse()
-    if typing.get_origin(expected_type) is list or expected_type is list:
-        collected = []
-        for trying_obj in collected_objs:
-            gotten = config_get_property(trying_obj, names, expected_type)
-            for val in gotten: # type: ignore
-                collected.append(val)
-        return ConfigObject(collected, parent=obj, key="Meld of " + names[-1]) # type: ignore
-    elif typing.get_origin(expected_type) is dict or expected_type is dict:
-        collected = {}
-        for trying_obj in collected_objs:
-            gotten = config_get_property(trying_obj, names, expected_type)
-            for k, v in gotten.items():  # type: ignore
-                collected[k] = v
-        return ConfigObject(collected, parent=obj, key="meld of " + names[-1]) # type: ignore
-    raise ConfigError("Attempted to meld a non-iterable.")
-
-def config_has_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T]) -> bool:
-    try:
-        config_get_property(obj, names, expected_type)
-        return True
-    except ConfigTraversalError:
-        return False
-
-@typing.overload
-def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: None = None) -> T | None:
-    ...
-
-@typing.overload
-def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: T) -> T:
-    ...
-
-def config_get_optional_property(obj: ConfigObject, names: list[str], expected_type: typing.Type[T], option: T | None = None) -> T|None:
-    try:
-        return config_get_property(obj, names, expected_type)
-    except ConfigTraversalError:
-        return option
-
 class KeyCombinationControl:
     def __init__(self, bind: "list[list[Pressable]]", press: typing.Callable, release: typing.Callable, _suppress: bool = False):
         self.keys = bind
@@ -1265,137 +1343,213 @@ FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
 say_sleep_ms = 0
 
-def _get_context_for_strerror(data: str, lineno: int, colno: int, context_lines: int) -> str:
-    lines = data.splitlines()
-    start = max(0, lineno - context_lines - 1)
-    end = min(len(lines), lineno + context_lines)
+CONFIGOBJ_METADATA: dict[int, list[str]] = {}
 
-    snippet = []
-    for i in range(start, end):
-        snippet.append(f"{i+1:4d} | {lines[i]}")
+def get_cfgsrc(obj) -> list[str]:
+    val = CONFIGOBJ_METADATA.get(id(obj))
+    if val is None:
+        CONFIGOBJ_METADATA[id(obj)] = []
+    return CONFIGOBJ_METADATA[id(obj)]
 
-        if i == lineno - 1:
-            pointer = "~" * ((colno + 7) // 2) + "^"  # 7 = prefix + line number + " | "
-            snippet.append(pointer)
+def config_make_cfgsrc_ctx(obj, key: str) -> str:
+    src = get_cfgsrc(obj).copy()
+    src.append(key)
+    for i, val in enumerate(src):
+        src[i] = f"\"{val}\""
+    return " -> ".join(src)
 
-    return "\n".join(snippet)
+def config_has_key(cfgobj: dict, key: str) -> bool:
+    return cfgobj.get(key) is not None
 
-def load_settings_from_config():
-    print(f"Loading from config...")
-    config: ConfigObject
+def config_get_string(cfgobj: dict, key: str) -> str:
+    val = cfgobj.get(key)
+    if val is None:
+        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+    if type(val) is not str:
+        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be str, was {type(val).__name__}")
+    get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
+    get_cfgsrc(val).append(key)
+    return val
+
+def config_get_bool(cfgobj: dict, key: str) -> bool:
+    val = cfgobj.get(key)
+    if val is None:
+        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+    if type(val) is not bool:
+        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be bool, was {type(val).__name__}")
+    get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
+    get_cfgsrc(val).append(key)
+    return val
+
+def config_get_number(cfgobj: dict, key: str) -> float:
+    val = cfgobj.get(key)
+    if val is None:
+        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+    if type(val) is not int and type(val) is not float:
+        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be int or float, was {type(val).__name__}")
+    get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
+    get_cfgsrc(val).append(key)
+    return float(val)
+
+def config_get_list(cfgobj: dict, key: str) -> list:
+    val = cfgobj.get(key)
+    if val is None:
+        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+    if type(val) is not list:
+        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be a list, was {type(val).__name__}")
+    get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
+    get_cfgsrc(val).append(key)
+    return val
+
+def config_get_dict(cfgobj: dict, key: str) -> dict:
+    val = cfgobj.get(key)
+    if val is None:
+        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+    if type(val) is not dict:
+        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be a dict, was {type(val).__name__}")
+    get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
+    get_cfgsrc(val).append(key)
+    return val
+
+def load_configdict_from_filename(filename: str, backup: str) -> dict:
+    config: dict
     try:
-        try:
-            with io.open("userconfig.json", "r") as config_file:
-                config = ConfigObject(json.loads(config_file.read(-1)))
-        except IOError:
-            with io.open("userconfig.json", "w") as config_file:
-                config_file.write(json.dumps({}))
-                config = ConfigObject({})
-        with io.open("internals/config.json", "r") as config_file:
-            config.set_fallback(ConfigObject(json.loads(config_file.read(-1))))
-    except json.JSONDecodeError as e:
-        friendly_message = e.msg
-        for key, explanation in _JSON_FRIENDLY_ERROR_MAP.items():
-            if key in e.msg:
-                friendly_message = f"{explanation} (line {e.lineno}, column {e.colno})"
-                break
-        squiggler = _get_context_for_strerror(e.doc, e.lineno, e.colno, 2)
-        raise RuntimeError(f"JSON Decode Error at line {e.lineno}, column {e.colno}:\n{squiggler}\n{friendly_message}.")
-    global verbose
-    verbose = config_get_property(config, ["meta", "verbose"], bool)
-    global allow_version_checking
-    allow_version_checking = config_get_property(config, ["meta", "enable_version_checking"], bool)
-    suppress_activate = config_get_optional_property(config, ["input", "activate_globally_blocked"], bool)
-    if suppress_activate is None:
-        suppress_activate = False
-    set_control(config_get_property(config, ["input", "activate"], str), "activate", on_activate_press_handler, release=on_activate_release_handler, _suppress=suppress_activate)
-    set_control(config_get_property(config, ["input", "reject"], str), "reject", on_reject_press_handler, release=on_reject_release_handler)
-    set_control(config_get_property(config, ["input", "radio_modifier"], str), "radio", on_radio_press_handler, release=on_radio_release_handler)
-    global DEFAULT_WINDOW_WIDTH
-    global DEFAULT_WINDOW_HEIGHT
-    global _skip_model_loading
-    _skip_model_loading = config_get_property(config, ["skip_model_load"], bool) if config_has_property(config, ["skip_model_load"], bool) else False
-    DEFAULT_WINDOW_WIDTH = config_get_property(config, ["meta", "window_width"], int)
-    DEFAULT_WINDOW_HEIGHT = config_get_property(config, ["meta", "window_height"], int)
-    label_frame.config(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
-    root.minsize(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
-    on_force_geometry_change()
+        with io.open(filename, "rb") as config_file:
+            config = tomllib.load(config_file)
+    except IOError:
+        with io.open(filename, "w") as config_file:
+            try:
+                with io.open(backup, "r") as backup_file:
+                    config_file.write(backup_file.read())
+            except IOError:
+                quit_with_errorbox(f"FATAL: Couldn't load {filename} and couldn't load the backup file {backup}.")
+        with io.open(filename, "rb") as config_file:
+            config = tomllib.load(config_file)
+    return config
 
-    global path_to_model
-    path_to_model = config_get_property(config, ["meta", "path_to_model"], str)
-    global autosend
-    autosend = config_get_property(config, ["input", "autosend"], bool)
-    global use_say
-    use_say_or_chat = config_get_property(config, ["output", "use_say_or_chat"], str)
-    if use_say_or_chat == "say":
-        use_say = True
-        global say_sleep_ms
-        say_sleep_ms = float(config_get_property(config, ["output", "say_settings", "delay_ms"], int)) / 1000
-    elif use_say_or_chat == "chat":
-        use_say = False
-        global chat_key
-        global chat_delay
-        chat_key = config_get_property(config, ["output", "chat_settings", "chat_key"], str)
-        chat_delay = config_get_property(config, ["output", "chat_settings", "chat_delay"], float)
-    else:
-        raise RuntimeError("Expected either \"say\" or \"chat\" as option for \"use_say_or_chat\" in \"output\"")
-    global WORD_REPLACEMENTS
-    WORD_REPLACEMENTS = config_get_property(config, ["output", "word_replacements"], dict[str, str]).decay()
-    filters = config_meld_property(config, ["filters"], dict[str, dict])
-    for name, filter in filters:
-        has_single = config_has_property(filter, ["action"], str)
-        has_double = config_has_property(filter, ["actions"], list)
+def _load_filters_from_config():
+    print(f"Loading filters from config file {FILTERCONFIG_FILENAME}")
+    config = load_configdict_from_filename(FILTERCONFIG_FILENAME, FILTERCONFIG_BACKUP_FILENAME)
+    for name, filter in config.items():
+        if type(filter) is not dict:
+            raise ConfigTypeError(f"Section {name} isn't a dictionary. Did you mean to write\n[{name}] ?")
+        get_cfgsrc(filter).extend(get_cfgsrc(config))
+        get_cfgsrc(filter).append(name)
+        has_single = config_has_key(filter, "action")
+        has_double = config_has_key(filter, "actions")
         if has_single and has_double:
-            raise ConfigError(f"Attempted to create a filter with both an \"action\" and with \"actions\". Only define one of them in tree {pretty_print_configobject(config_get_property(filter, ['actions'], list), 'action, got actions.')}")
+            raise ConfigError(f"Attempted to create a filter with both an \"action\" and with \"actions\". Only define one of them in filter \"{name}\"")
         if not has_single and not has_double:
-            raise ConfigError(f"Attempted to create a filter which lacked both an \"action\" and an \"actions\" field in tree {pretty_print_configobject(config_get_property(filter, ['actions'], list), 'actions or action')}")
-        title = config_get_property(filter, ["title"], str)
+            raise ConfigError(f"Attempted to create a filter which lacked both an \"action\" and an \"actions\" field in filter \"{name}\"")
+        title = config_get_string(filter, "title")
         parsed_actions: list[ApplyableAction] = []
         if has_single:
-            parsed_actions.append(TransformAction(FILTERS, config_get_property(filter, ["action"], str)))
+            parsed_actions.append(TransformAction(FILTERS, config_get_string(filter, "action")))
         elif has_double:
-            actions = config_get_property(filter, ["actions"], list)
-            for action in actions:
-                type = config_get_property(action, ["type"], str)
-                if type == "script":
-                    filename = config_get_property(action, ["script"], str)
+            actions = config_get_list(filter, "actions")
+            for action_name in actions:
+                if type(action_name) is not str:
+                    raise ConfigTypeError(f"Action {action_name} is not a string; instead is {type(action_name).__name__}")
+                action = config_get_dict(filter, action_name)
+                typ = config_get_string(action, "type")
+                if typ == "script":
+                    filename = config_get_string(action, "script")
                     parsed_actions.append(TransformAction(FILTERS, filename))
-                elif type == "filter":
-                    filter_to_apply = config_get_property(action, ["name"], str)
-                    mode = config_get_optional_property(action, ["mode"], str)
+                elif typ == "filter":
+                    filter_to_apply = config_get_string(action, "name")
+                    mode = None
+                    if config_has_key(action, "mode"):
+                        mode = config_get_string(action, "mode")
                     if mode is None or mode == "enable":
                         parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
                     elif mode == "disable":
                         parsed_actions.append(SelfishAction(FILTERS, filter_to_apply))
                     else:
-                        raise ConfigError(f"Attempted to create an action of type \"{type}\" with an invalid \"mode\" of \"{mode}\", expected \"enable\" or \"disable\" in tree {pretty_print_configobject(action, '')}")
+                        raise ConfigError(f"Attempted to create an action of type \"{typ}\" with an invalid mode of \"{mode}\", expected \"enable\" or \"disable\" for action {config_make_cfgsrc_ctx(action, action_name)}")
+                else:
+                    raise ConfigError(f"Attempted to create an action of type \"{typ}\". Expected \"script\" or \"type\" for action {config_make_cfgsrc_ctx(action, action_name)}")
         activation = FilterActivation("unbound", True, True)
-        if config_has_property(filter, ["key_combination"], str):
-            activation.keybind = config_get_property(filter, ["key_combination"], str)
-        if config_has_property(filter, ["toggle"], bool):
-            activation.toggle = config_get_property(filter, ["toggle"], bool)
-        if config_has_property(filter, ["suppress"], bool):
-            activation.suppresses = config_get_property(filter, ["suppress"], bool)
+        if config_has_key(filter, "bind"):
+            activation.keybind = config_get_string(filter, "bind")
+        if config_has_key(filter, "toggle"):
+            activation.toggle = config_get_bool(filter, "toggle")
+        if config_has_key(filter, "suppress"):
+            activation.suppresses = config_get_bool(filter, "suppress")
+        group = "default"
+        exclusive = False
+        color = None
+        text_color = None
+        if config_has_key(filter, "group"):
+            group = config_get_string(filter, "group")
+        if config_has_key(filter, "exclusive"):
+            exclusive = config_get_bool(filter, "exclusive")
+        if config_has_key(filter, "color"):
+            color = config_get_string(filter, "color")
+        if config_has_key(filter, "text_color"):
+            text_color = config_get_string(filter, "text_color")
         Filter(name, title, FILTERS, parsed_actions,
-               config_get_optional_property(filter, ["group"], str, "default"),
-               config_get_optional_property(filter, ["exclusive"], bool, False),
+               group,
+               exclusive,
                activation,
-               background=config_get_optional_property(filter, ["color"], str),
-               text_color=config_get_optional_property(filter, ["text_color"], str))
-    filter_controls = config_get_optional_property(config, ["filter_controls"], dict[str, str])
-    if filter_controls is not None:
-        for filter_name, binding in filter_controls.items():
-            try:
-                filter = FILTERS.registered_filters[filter_name]
-            except KeyError:
-                raise ConfigError(f"Attempted to set the keybinding for filter \"{filter_name}\" to \"{binding}\", but said filter does not exist.")
-            if len(Pressable.parse_hotkey(binding)) == 0:
-                filter.activation_details = None
-            elif filter.activation_details is not None:
-                filter.activation_details.keybind = binding
-            else:
-                filter.activation_details = FilterActivation(binding, True, True)
+               background=color,
+               text_color=text_color)
 
+def load_settings_from_config():
+    print(f"Loading from config file {CONFIG_FILENAME}")
+    config = load_configdict_from_filename(CONFIG_FILENAME, CONFIG_BACKUP_FILENAME)
+    print(config)
+    output = config_get_dict(config, "output")
+    say_settings = config_get_dict(output, "say_settings")
+    chat_settings = config_get_dict(output, "chat_settings")
+    input = config_get_dict(config, "input")
+    meta = config_get_dict(config, "meta")
+
+    global allow_version_checking
+    allow_version_checking = config_get_bool(meta, "enable_version_checking")
+    global allow_cpu_asr
+    allow_cpu_asr = not config_get_bool(meta, "warn_on_cpu")
+    suppress_activate = config_get_bool(input, "activate_globally_blocked")
+    set_control(config_get_string(input, "activate"), "activate", on_activate_press_handler, release=on_activate_release_handler, _suppress=suppress_activate)
+    set_control(config_get_string(input, "reject"), "reject", on_reject_press_handler, release=on_reject_release_handler)
+    set_control(config_get_string(input, "radio_modifier"), "radio", on_radio_press_handler, release=on_radio_release_handler)
+    default_blocked_keys = config_get_list(input, "blocked_keys")
+    for key in default_blocked_keys:
+        if type(key) is not str:
+            raise ConfigTypeError(f"Expected blocked_keys to be a list of strings, got {type(key).__name__}")
+    setup_default_blocked_keys(default_blocked_keys)
+    global DEFAULT_WINDOW_WIDTH
+    global DEFAULT_WINDOW_HEIGHT
+    global _skip_model_loading
+    _skip_model_loading = config_get_bool(meta, "skip_model_load") if config_has_key(meta, "skip_model_load") else False
+    DEFAULT_WINDOW_WIDTH = int(config_get_number(meta, "window_width"))
+    DEFAULT_WINDOW_HEIGHT = int(config_get_number(meta, "window_height"))
+    @main_thread
+    def resize_label_frame():
+        label_frame.config(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
+        root.minsize(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
+        on_force_geometry_change()
+    resize_label_frame()
+
+    global path_to_model
+    path_to_model = config_get_string(meta, "path_to_model")
+    global autosend
+    autosend = config_get_bool(input, "autosend")
+    global use_say
+    output_method = config_get_string(output, "output_method")
+    if output_method == "say":
+        use_say = True
+        global say_sleep_ms
+        say_sleep_ms = config_get_number(say_settings, "delay_ms") / 1000
+    elif output_method == "chat":
+        use_say = False
+        global chat_key
+        global chat_delay
+        chat_key = config_get_string(chat_settings, "chat_key")
+        chat_delay = config_get_number(chat_settings, "chat_delay")
+    else:
+        raise ConfigError(f"Output method should be either \"say\" or \"chat\", was \"{output_method}\"")
+    _load_filters_from_config()
+    
 background = Configurable(label_frame)
 label_background = Configurable(label)
 
@@ -1424,7 +1578,7 @@ def _finalize_process():
     verbose_print("Finalizing.")
     global state
     with STATUS_LOCK:
-        label_background.config(bg="white")
+        tk_config(label_background, bg="white")
         global STOP_RECORDING
         global CANCEL_PROCESS
         state = State.READY
@@ -1435,7 +1589,7 @@ def _finalize_process():
         if not (RECORDING_STREAM is None):
             RECORDING_STREAM.stop_stream()
             RECORDING_STREAM.close()
-        label.config(text="Waiting...")
+        tk_config(label, text="Waiting...")
     try:
         os.remove("output.wav")
     except:
@@ -1466,12 +1620,12 @@ def record():
         STOP_RECORDING = False
         state = State.PROCESSING
     global TRANSCRIBED
-    label.config(text="Transcribing...")
+    tk_config(label, text="Transcribing...")
     TRANSCRIBED = str(asr_model.transcribe(["output.wav"])[0].text) # type: ignore
     if CANCEL_PROCESS:
         _finalize_process()
         return
-    label.config(text=TRANSCRIBED)
+    tk_config(label, text=TRANSCRIBED)
     with STATUS_LOCK:
         state = State.ACCEPTING
     if autosend:
@@ -1489,7 +1643,7 @@ def begin_recording():
     global IS_RADIO
     if state != State.READY:
         return
-    label.config(text="Recording...")
+    tk_config(label, text="Recording...")
     with STATUS_LOCK:
         IS_RADIO = False
         RECORDING_START_TIME = time.time()
@@ -1507,6 +1661,7 @@ def end_recording():
     with STATUS_LOCK:
         STOP_RECORDING = True
 
+@main_thread
 def colorize(val: str, time: float):
     def _recolor(obj):
         obj.config(bg="white")
@@ -1526,7 +1681,9 @@ def submit_chat(transcript: str):
     time.sleep(0.1)
 
 def submit_say(transcript: str):
-    pyperclip.copy(f"Say \"{transcript}\"")
+    doublequote = '"'
+    singlequote = "'"
+    pyperclip.copy(f"Say \"{transcript.replace(doublequote, singlequote)}\"")
     press_and_release_key("tab")
     time.sleep(say_sleep_ms)
     press_key("ctrl")
@@ -1535,11 +1692,6 @@ def submit_say(transcript: str):
     press_and_release_key("enter")
     press_and_release_key("tab")
     time.sleep(say_sleep_ms)
-
-def perform_transformations(transcript: str) -> str:
-    for word, replacement in WORD_REPLACEMENTS.items():
-        transcript = transcript.replace(word, replacement)
-    return FILTERS.transform_input(transcript)
 
 class ModifyableVirtualNamedInput(VirtualNamedInput):
     def __init__(self, name: str):
@@ -1575,17 +1727,16 @@ def flatten_simple_hotkey(hotkey) -> list[Pressable]:
     for alias in parsed[0]:
         added.add(alias)
     return list(added)
-    
-def setup_default_blocked_keys():
-    blockable_keys = ['w', 'a', 's', 'd', 'f', 'e', 'x', 'alt', 'space', 'lmb', 'rmb']
+
+def setup_default_blocked_keys(blockable_keys: list[str]):
     for key in blockable_keys:
         name = ModifyableVirtualNamedInput(key)
         aliases = flatten_simple_hotkey(key)
         for alias in aliases:
             DEFAULT_BLOCKED_KEYS[alias] = name
-            print(f"blocking {alias} with name {name.name}")
+            print(f"Adding {alias} with name {name.name} to blocked binds when in gameplay")
 
-def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple()):
+def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([])):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -1667,6 +1818,10 @@ def unblock_problematic_inputs():
                 else:
                     release_key(name.name)
 
+@main_thread
+def label_config(text: str):
+    label.config(text=text)
+
 def submit():
     global state
     if state != State.ACCEPTING:
@@ -1675,7 +1830,7 @@ def submit():
     with STATUS_LOCK:
         transcript = TRANSCRIBED
     _finalize_process()
-    label.configure(text=transcript)
+    label_config(text=transcript)
     print("--- Submitting transcript")
     colorize("green", 1)
     block_problematic_inputs()
@@ -1686,9 +1841,9 @@ def submit():
             label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
             transcript = "; " + transcript
         if use_say:
-            submit_say(perform_transformations(transcript))
+            submit_say(transcript)
         else:
-            submit_chat(perform_transformations(transcript))
+            submit_chat(transcript)
     except:
         raise
     finally:
@@ -1735,6 +1890,7 @@ def on_activate_press_handler():
                 print("Released within 0.5 seconds")
                 press = True
                 break
+            time.sleep(0.01)
         if press:
             print("Pressed, submitting")
             submit()
@@ -1754,6 +1910,7 @@ def on_reject_press_handler():
 def on_reject_release_handler():
     pass
 
+@main_thread
 def set_radio_colors():
     if IS_RADIO:
         label_background.config(bg="light blue")
@@ -1871,29 +2028,195 @@ def skip_model_load(final: Box):
     asr_model = FakeASRModel()
     final.value = True
 
+def has_nvidia_gpu() -> bool:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+EARLY_GIVEUP_INIT = False
+
+def pytorch_version_for_cuda_version(cuda_version: str) -> str | None:
+    try:
+        major, minor = map(int, cuda_version.split(".")[:2])
+        if major >= 12:
+            return "cu128"
+        if major == 11:
+            return "cu118"
+    except Exception:
+        pass
+    return None
+
+@main_thread
+def _download_pytorch_cuda():
+    tk_config(label, text="Waiting for PyTorch version to be selected...")
+    window = tk.Toplevel()
+    def window_close_hook():
+        window.destroy()
+        quit_normal()
+    window.protocol("WM_DELETE_WINDOW", window_close_hook)
+    window.title("STT PyTorch Cuda Installer")
+    window.geometry("700x500")
+    setattr(window, "gpu_var", tk.StringVar(window, value="Detecting..."))
+    setattr(window, "cuda_var", tk.StringVar(window, value="Detecting..."))
+    setattr(window, "recommendation_var", tk.StringVar(window, value="Detecting..."))
+    gpu_var = getattr(window, "gpu_var")
+    cuda_var = getattr(window, "cuda_var")
+    recommendation_var = getattr(window, "recommendation_var")
+
+    ttk.Label(window, text="GPU:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(window, textvariable=gpu_var).grid(row=0, column=1, sticky="w")
+
+    ttk.Label(window, text="CUDA Version:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(window, textvariable=cuda_var).grid(row=1, column=1, sticky="w")
+
+    ttk.Label(window, text="Recommended PyTorch Build:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(window, textvariable=recommendation_var).grid(row=2, column=1, sticky="w")
+    cuda_tag = None
+
+    def suggested_cuda_URL() -> str:
+        if cuda_tag is None:
+            return "https://download.pytorch.org/whl/cpu"
+        return f"https://download.pytorch.org/whl/{cuda_tag}"
+
+    def install_pytorch():
+        tk_config(install_button, state="disabled")
+        def worker():
+            try:
+                if cuda_tag is None:
+                    return
+                cmd = [sys.executable, "-m", "pip", "install",
+                        "torch", "--index-url", suggested_cuda_URL()]
+                write_log("Running: ")
+                write_log(" ".join(cmd))
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+                if process.stdout is None:
+                    raise RuntimeError("While running pytorch installer, stdout was None.")
+                for line in process.stdout:
+                    write_log(line.rstrip())
+                code = process.wait()
+                if code == 0:
+                    @main_thread
+                    def finished():
+                        messagebox.showinfo("Success", "PyTorch installer completed.")
+                        quit_normal()
+                    finished()
+                else:
+                    @main_thread
+                    def finished():
+                        messagebox.showinfo("Failed", f"PyTorch installer failed with code {code}!\nIf you want to install PyTorch yourself, run the command in the log.\nYou can also try googling PyTorch CUDA install!")
+                        quit_normal()
+            except Exception as e:
+                @main_thread_async
+                def errbox():
+                    messagebox.showwarning("An error occurred", f"An error occurred while trying to install CUDA: {e}")
+                errbox()
+        spawn_thread(worker)
+                 
+    @main_thread
+    def write_log(text: str):
+        log.insert(tk.END, text + "\n")
+        log.see(tk.END)
+
+    install_button = ttk.Button(
+        window,
+        text="Install PyTorch",
+        command=install_pytorch
+    )
+    install_button.grid(row=3, column=0, columnspan=2, pady=10)
+    log = tk.Text(window)
+    log.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+    window.grid_rowconfigure(4, weight=1)
+    window.grid_columnconfigure(1, weight=1)
+    write_log(" -- CUDA install log --")
+    try:
+        write_log("Detecting NVIDIA GPU and CUDA version...")
+        result = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        gpu_name = "Unknown NVIDIA GPU"
+        match = re.search(
+            r"CUDA Version:\s*([0-9.]+)",
+            result.stdout
+        )
+        cuda_version = match.group(1) if match else "Unknown"
+        write_log(f"Found CUDA version {cuda_version}")
+        try:
+            gpu_query = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name",
+                    "--format=csv,noheader"
+                ],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            gpu_name = gpu_query.stdout.splitlines()[0].strip()
+            write_log(f"Found GPU version {gpu_name}")
+        except Exception as e:
+            write_log(f"Encountered exception {e}")
+        gpu_var.set(gpu_name)
+        cuda_var.set(cuda_version)
+        cuda_tag = pytorch_version_for_cuda_version(cuda_version)
+        recommendation_var.set(cuda_tag if cuda_tag else "CPU Only")
+    except Exception as e:
+        write_log(f"No NVIDIA GPU detected.")
+        gpu_var.set("No NVIDIA GPU detected")
+        cuda_var.set("N/A")
+        recommendation_var.set("CPU Only")
+        tk_config(install_button, state="disabled")
+    finally:
+        write_log(f"PyTorch install URL:")
+        write_log(f"  {suggested_cuda_URL()}")
+
 def load_model(final: Box, can_spin: Box, loading_text: Box):
     if _skip_model_loading:
         return skip_model_load(final)
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):
-        label.config(text=f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?")
+        tk_config(label, text=f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?")
         allowed = False
         def on_allow():
             nonlocal allowed
             allowed = True
         def on_deny():
             root.quit()
-        allow = tk.Button(root, text="Allow", command=on_allow)
-        deny = tk.Button(root, text="Deny", command=on_deny)
-        allow.pack(padx=10, pady=10, side=tk.LEFT)
-        deny.pack(padx=10, pady=10, side=tk.LEFT)
-        on_force_geometry_change()
+        allow = None
+        deny = None
+        @main_thread
+        def create_buttons():
+            allow = tk.Button(root, text="Allow", command=on_allow)
+            deny = tk.Button(root, text="Deny", command=on_deny)
+            allow.pack(padx=10, pady=10, side=tk.LEFT)
+            deny.pack(padx=10, pady=10, side=tk.LEFT)
+            on_force_geometry_change()
+        create_buttons()
         while not allowed:
             time.sleep(0.5)
-        allow.destroy()
-        deny.destroy()
-        on_force_geometry_change()
+        @main_thread
+        def destroy_buttons():
+            while allow is None or deny is None:
+                time.sleep(0.5)
+            allow.destroy()
+            deny.destroy()
+            on_force_geometry_change()
+        destroy_buttons()
         can_spin.value = True
         loading_text.value = "Downloading parakeet-tdt-0.6b-v2.nemo..."
         hf_hub_download(
@@ -1903,13 +2226,50 @@ def load_model(final: Box, can_spin: Box, loading_text: Box):
             local_dir_use_symlinks=False
             )
     can_spin.value = True
+
+    print("Initializing pytorch...")
+    loading_text.value = "Initializing pytorch..."
+    import torch
+    import torch.version
+    print("Initialized.")
+    print("torch version:", torch.__version__)
+    print("cuda available:", torch.cuda.is_available())
+    print("cuda version:", torch.version.cuda)
+    if not torch.cuda.is_available() and not allow_cpu_asr:
+        why_no_cuda = "Something went wrong."
+        try:
+            torch.cuda.current_device()
+        except Exception as e:
+            print(type(e).__name__)
+            print(e)
+            why_no_cuda = f"{e}"
+        @main_thread
+        def download_pytorch() -> bool | None:
+            return messagebox.askyesnocancel("STT Loaded to CPU", f"PyTorch was loaded to your CPU because CUDA wasn't available: {why_no_cuda}\nThis will lead to degraded performance.\nPress YES to download pytorch for GPU, press NO to ignore, and press CANCEL to close STT.\nDisable this warning in the config by changing warn_on_cpu to false.")
+        choice = download_pytorch()
+        if choice is None:
+            quit_normal()
+        if choice:
+            global EARLY_GIVEUP_INIT
+            EARLY_GIVEUP_INIT = True
+            final.value = True
+            spawn_thread(_download_pytorch_cuda)
+            return
     print("Initalizing nemo...")
     loading_text.value = "Initalizing nemo..."
     import nemo.collections.asr as nemo_asr
-    print("Initalized.")
+    print("Initialized.")
+
     global asr_model
     loading_text.value = "Loading " + model_filename + "..."
     asr_model = nemo_asr.models.ASRModel.restore_from(model_path) # type: ignore
+    device = next(asr_model.parameters()).device # type: ignore
+    print(f"Model device: {device}")
+    if device.type == "cpu" and not allow_cpu_asr:
+        @main_thread_async
+        def confirm_cpu():
+            messagebox.showwarning("STT Loaded to CPU", "The speech-to-text model was loaded to your CPU.\nDisable this warning in the config by changing warn_on_cpu to false.")
+        confirm_cpu()
     final.value = True
 
 def advance_wheel(wheel: str) -> str:
@@ -1963,12 +2323,12 @@ def init():
     loading_finished = Box(False)
     can_spin = Box(False)
     loading_text = Box("Goaning stations...")
-    label.config(text=loading_text.value)
-    load_settings_from_config()
+    tk_config(label, text=loading_text.value)
     populate_named_inputs()
-    setup_default_blocked_keys()
+    load_settings_from_config()
     free_ram = psutil.virtual_memory().available
     required_ram = 5 * 1024**3 # 5GB
+    print(f"Current free ram is {free_ram}B or {free_ram / 1000 / 1000 / 1000}GB")
     if free_ram < required_ram:
         spawn_thread(messagebox.showerror, "Low system memory",
                      f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
@@ -1978,7 +2338,7 @@ def init():
             latest = latest_version()
             if version_greater(latest, current):
                 changelog = fetch_changelog()
-                text = f"New version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config file. (meta -> enable_version_checking)\nPress OK to view the changelog."
+                text = f"Check out the changelog?\nNew version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config file. (meta -> enable_version_checking)\nPress Yes to view the changelog."
                 if changelog.critical_updates is not None:
                     text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config file. (meta -> enable_version_checking)"
                 spawn_thread(show_version_info, text, changelog, current)
@@ -1988,9 +2348,11 @@ def init():
     while not loading_finished.value:
         while can_spin.value and not loading_finished.value:
             wheel = advance_wheel(wheel)
-            label.config(text=loading_text.value+" "+wheel)
+            tk_config(label, text=loading_text.value + " " + wheel)
             time.sleep(0.5)
         time.sleep(0.5)
+    if EARLY_GIVEUP_INIT:
+        return
     for registered_filter in FILTERS.registered_filters.values():
         if registered_filter.activation_details is None or len(Pressable.parse_hotkey(registered_filter.activation_details.keybind)) == 0:
             registered_filter.activation_details = None
@@ -2004,8 +2366,16 @@ def init():
     spawn_thread(mouse_listener)
     spawn_thread(keyboard_listener)
 
-    label.config(text="Waiting...")
+    tk_config(label, text="Waiting...")
 
 root.after(0, spawn_thread, init)
 
 root.mainloop()
+
+if FINAL_FATAL_MESSAGE is not None:
+    ctypes.windll.user32.MessageBoxW(
+        None,
+        FINAL_FATAL_MESSAGE,
+        "STT Fatal error",
+        0x10  # MB_ICONERROR
+    )

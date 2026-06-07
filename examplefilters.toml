@@ -1,0 +1,129 @@
+# Template:
+# [filter name]
+# title = "title shown in the window"
+# toggle = true / false (Do you need to hold the filter button)
+# (optional) color = "some color" (The color of the filter.
+#                    accepted colors: https://inventwithpython.com/blog/complete-list-tkinter-colors-valid-and-tested.html)
+#                    (defaults to green)
+# (optional) text_color = "some color" (The color of the filter's text. Same rules as above) (defaults to black)
+# (optional) bind = "some keybind (ctrl + x, alt + 2, `, ?, etc...)"
+# (optional) suppress = true / false (true: this keypress isn't shown to the rest of your computer) (defaults to false)
+# (optional) group = "name of the group" (affects exclusve)
+# (optional) exclusive = true / false (true: only one filter in the same group can be on at once)   (defaults to false)
+# action / actions = SEE OTHER SECTION
+
+# --- action ---
+# action = "path/to/python/file.py" (filter to enable/disable)
+# ---        ---
+# This is mutually exclusive with actions. You can either one or the other.
+# --------------
+
+# --- actions ---
+# actions = ["first action name", "second action name"]
+# ---         ---
+# The action names have to be unique, and can't collide with any of the other keys,
+# such as title, toggle, text_color, group, etc.
+# Define the actions as:
+# ---         ---
+# [filter_name.first action name]
+# type = "script" or "filter"
+# If it is a script:
+# script = "path/to/python/file.py" (filter to enable / disable)
+# If it is a filter:
+# mode = "enable" or "disable"
+# filter = "name of the filter"
+# ---------------
+
+[rage]
+title = "Rage"
+bind = "unbound"
+toggle = true
+actions = ["caps", "excited"]
+
+[binary]
+title = "Binary"
+bind = "unbound"
+group = "radio"
+exclusive = true
+toggle = true
+color = "dark blue"
+text_color = "white"
+action = "filters/binary.py"
+
+[cargo]
+title = "Cargo"
+bind = "unbound"
+group = "radio"
+exclusive = true
+toggle = true
+color = "DarkGoldenrod1"
+text_color = "black"
+action = "filters/cargo.py"
+
+[command]
+title = "Command"
+bind = "unbound"
+group = "radio"
+exclusive = true
+toggle = true
+color = "DeepPink"
+text_color = "black"
+action = "filters/command.py"
+
+[engineering]
+title = "Engineering"
+bind = "unbound"
+group = "radio"
+exclusive = true
+toggle = true
+color = "DarkOrange"
+text_color = "black"
+action = "filters/engineering.py"
+
+[medical]
+title = "Medical"
+bind = "unbound"
+group = "radio"
+exclusive = true
+toggle = true
+color = "aqua"
+text_color = "black"
+action = "filters/medical.py"
+
+[science]
+title = "Science"
+bind = "unbound"
+group = "radio"
+exclusive = true
+toggle = true
+color = "purple"
+text_color = "white"
+action = "filters/science.py"
+
+[security]
+title = "Security"
+bind = "unbound"
+group = "radio"
+exclusive = true
+toggle = true
+color = "red"
+text_color = "black"
+action = "filters/security.py"
+
+[all_caps]
+title = "CAPS"
+toggle = true
+action = "filters/all_caps.py"
+
+[excited]
+title = "!!!"
+toggle = true
+action = "filters/excited.py"
+
+[rage.caps]
+type = "filter"
+name = "all_caps"
+
+[rage.excited]
+type = "filter"
+name = "excited"

@@ -1,6 +1,7 @@
 @echo off
+for /F %%a in ('echo prompt $E^| cmd') do set "ESC=%%a"
 echo ------------------------------------------------------
-echo This script will freeze while uninstalling setuptools!
+echo %ESC%[5;93mThis script will freeze while uninstalling setuptools!%ESC%[0m
 echo ------------------------------------------------------
 echo Do not close this window! It is just installing the
 echo           2.5GB of python libraries!
@@ -40,7 +41,7 @@ if exist venv (
     python -m venv venv
     echo ------------------------------------------------------
     echo  Typically hangs on Uninstalling setuptools-65.5.0...
-    echo           Wait for Installation Complete!
+    echo %ESC%[5;93m          Wait for Installation Complete!%ESC%[0m
     echo ------------------------------------------------------
     echo         Press any key when ready to install.
     echo ------------------------------------------------------
