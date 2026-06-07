@@ -1122,7 +1122,7 @@ CONTROLBUTTONS_BY_KEY: dict[Pressable, ControlButton] = {}
 
 def populate_named_inputs():
     inputs_to_name = list(string.ascii_lowercase)
-    inputs_to_name += ["menu", "shift", "alt", "ctrl", "space", "left", "right", "up", "down"]
+    inputs_to_name += ["menu", "shift", "alt", "ctrl", "space", "left", "right", "up", "down", "tab"]
     for name in inputs_to_name:
         virtual = VirtualNamedInput(name)
         for alias in virtual.aliases():
@@ -1904,17 +1904,21 @@ def block_problematic_inputs():
         BLOCKED_KEYS = DEFAULT_BLOCKED_KEYS
         BLOCKED_KEYS_PRESS_RECORD = {}
         for source, key in BLOCKED_KEYS.items():
-            pressed = ModifyableVirtualNamedInput(key.name)
-            BLOCKED_KEYS_MASTERLIST.append(pressed)
-            if source.is_keyboard() and is_pressed(key.name):
-                print(" CCC is_pressed")
-                pressed.press()
-                # fuck it special case
-                if key.name == "alt":
-                    release_key("alt")
-            parsed = flatten_simple_hotkey(key.name)
-            for pressable in parsed:
-                BLOCKED_KEYS_PRESS_RECORD[pressable] = pressed
+            try:
+                pressed = ModifyableVirtualNamedInput(key.name)
+                BLOCKED_KEYS_MASTERLIST.append(pressed)
+                if source.is_keyboard() and is_pressed(key.name):
+                    print(" CCC is_pressed")
+                    pressed.press()
+                    # fuck it special case
+                    if key.name == "alt":
+                        release_key("alt")
+                parsed = flatten_simple_hotkey(key.name)
+                for pressable in parsed:
+                    BLOCKED_KEYS_PRESS_RECORD[pressable] = pressed
+            except Exception as e:
+                quit_with_errorbox(f"FATAL: couldn't block the key \"{key.name}\"\nTry removing it from the blocked keys in userconfig.toml\n({e})")
+
 
 def unblock_problematic_inputs():
     masterlist = []
@@ -1927,11 +1931,14 @@ def unblock_problematic_inputs():
         BLOCKED_KEYS_PRESS_RECORD = {}
         BLOCKED_KEYS_MASTERLIST = []
         for name in masterlist:
-            if name.was_modified:
-                if name.is_pressed:
-                    press_key(name.name)
-                else:
-                    release_key(name.name)
+            try:
+                if name.was_modified:
+                    if name.is_pressed:
+                        press_key(name.name)
+                    else:
+                        release_key(name.name)
+            except Exception as e:
+                quit_with_errorbox(f"FATAL: couldn't unblock the key \"{name}\"\nTry removing it from the blocked keys in userconfig.toml\n({e})")
                     
 def submit():
     global state
