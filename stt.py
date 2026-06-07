@@ -14,7 +14,6 @@ try:
     import pyperclip
     import keyboard
     import ctypes
-    import psutil
     import os
     import io
     import requests
