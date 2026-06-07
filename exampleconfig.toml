@@ -18,10 +18,13 @@ blocked_keys = [
 ]
 
 [output]
-# Choose between "say" or "chat"
-# Say is generally better; less latency,
-# fewer issues.
-output_method = "say"
+# Choose between "say", "chat", or "hwnd"
+# hwnd is the best option. There is near no
+# latency. Say is second best, and chat
+# is the worst option. If you run into issues
+# with one of them, try the others and see if
+# the issue goes away.
+output_method = "hwnd"
 
 [output.say_settings]
 # Delay between opening the window and
@@ -35,6 +38,15 @@ chat_key = "t"
 # sending the message. Increase
 # this if you run into issues.
 chat_delay = 0.75
+
+[output.hwnd_settings]
+# To find the automation id of the chat bar,
+# open SS13. Open
+# C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\inspect.exe
+# Click on the chat bar
+# Look for the text "automation id"
+# Write the number here.
+automation_id = 1013
 
 [meta]
 # Debug option. Disables the speech to text function

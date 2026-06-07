@@ -18,6 +18,7 @@ try:
     import os
     import io
     import requests
+    import psutil
     import uuid
     import subprocess
     import functools
@@ -25,6 +26,7 @@ try:
     import types
     import pynput._util.win32
     import importlib.util
+    import pywinauto
     import ctypes.wintypes
     from enum import Enum
     import traceback
@@ -897,6 +899,8 @@ class Control:
         
 autosend = False
 use_say = False
+use_hwnd = False
+hwnd_automation_id = 0
 allow_version_checking = True
 allow_cpu_asr = True
 chat_delay = 0
@@ -1501,6 +1505,7 @@ def load_settings_from_config():
     output = config_get_dict(config, "output")
     say_settings = config_get_dict(output, "say_settings")
     chat_settings = config_get_dict(output, "chat_settings")
+    hwnd_settings = config_get_dict(output, "hwnd_settings")
     input = config_get_dict(config, "input")
     meta = config_get_dict(config, "meta")
 
@@ -1535,17 +1540,25 @@ def load_settings_from_config():
     global autosend
     autosend = config_get_bool(input, "autosend")
     global use_say
+    global use_hwnd
+    global hwnd_automation_id
     output_method = config_get_string(output, "output_method")
     if output_method == "say":
         use_say = True
+        use_hwnd = False
         global say_sleep_ms
         say_sleep_ms = config_get_number(say_settings, "delay_ms") / 1000
     elif output_method == "chat":
         use_say = False
+        use_hwnd = False
         global chat_key
         global chat_delay
         chat_key = config_get_string(chat_settings, "chat_key")
         chat_delay = config_get_number(chat_settings, "chat_delay")
+    elif output_method == "hwnd":
+        use_say = False
+        use_hwnd = True
+        hwnd_automation_id = int(config_get_number(hwnd_settings, "automation_id"))
     else:
         raise ConfigError(f"Output method should be either \"say\" or \"chat\", was \"{output_method}\"")
     _load_filters_from_config()
@@ -1693,6 +1706,108 @@ def submit_say(transcript: str):
     press_and_release_key("tab")
     time.sleep(say_sleep_ms)
 
+WM_SETTEXT = 0x000C
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+VK_RETURN = 0x0D
+WM_GETTEXT = 0x000D
+
+_editboxtextbuf = ctypes.create_unicode_buffer(128)
+
+def get_editbox_textbuf(hwnd) -> str:
+    ctypes.windll.user32.SendMessageW(
+        hwnd,
+        WM_GETTEXT,
+        len(_editboxtextbuf),
+        _editboxtextbuf
+    )
+    return _editboxtextbuf.value
+
+AUTOMATION_TEXTEDIT: pywinauto.application.WindowSpecification | None = None
+AUTOMATION_TEXTEDIT_HWND = None
+
+class ProcessNotFoundError(RuntimeError):
+    pass
+
+def _get_dreamseeker_editbox_hwnd():
+    global AUTOMATION_TEXTEDIT
+    global AUTOMATION_TEXTEDIT_HWND
+    print("Locating dreamseeker pid...")
+    for proc in psutil.process_iter(["pid", "name"]):
+        print(f"  Found process {proc.info['name']} with pid {proc.info['pid']}")
+        if proc.info["name"] and proc.info["name"].lower() == "dreamseeker.exe":
+            pid = proc.info["pid"]
+            break
+    else:
+        raise ProcessNotFoundError("Couldn't find dreamseeker.exe")
+    AUTOMATION_TEXTEDIT = pywinauto.Application(backend="uia").connect(process=pid).top_window().child_window(
+        auto_id=str(hwnd_automation_id),
+        control_type="Edit"
+    )
+    AUTOMATION_TEXTEDIT_HWND = AUTOMATION_TEXTEDIT.handle
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.DWORD),
+        ("flags", ctypes.wintypes.DWORD),
+        ("hwndActive", ctypes.wintypes.HWND),
+        ("hwndFocus", ctypes.wintypes.HWND),
+        ("hwndCapture", ctypes.wintypes.HWND),
+        ("hwndMenuOwner", ctypes.wintypes.HWND),
+        ("hwndMoveSize", ctypes.wintypes.HWND),
+        ("hwndCaret", ctypes.wintypes.HWND),
+        ("rcCaret", ctypes.wintypes.RECT),
+    ]
+
+def attach_and_focus(hwnd):
+    current_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+    target_tid = ctypes.windll.user32.GetWindowThreadProcessId(
+        hwnd,
+        None
+    )
+    ctypes.windll.user32.AttachThreadInput(
+        current_tid,
+        target_tid,
+        True
+    )
+    ctypes.windll.user32.SetFocus(hwnd)
+    ctypes.windll.user32.AttachThreadInput(
+        current_tid,
+        target_tid,
+        False
+    )
+
+def submit_automation(transcript: str):
+    doublequote = '"'
+    singlequote = "'"
+    madestr = f"Say \"{transcript.replace(doublequote, singlequote)}\""
+    ctypes.windll.user32.SendMessageW(
+        AUTOMATION_TEXTEDIT_HWND,
+        WM_SETTEXT,
+        0,
+        madestr
+    )
+    parent = ctypes.windll.user32.GetParent(AUTOMATION_TEXTEDIT_HWND)
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(info)
+    ctypes.windll.user32.GetGUIThreadInfo(
+        0,  # foreground thread
+        ctypes.byref(info)
+    )
+    attach_and_focus(parent)
+    ctypes.windll.user32.PostMessageW(AUTOMATION_TEXTEDIT_HWND, WM_KEYDOWN, VK_RETURN, 0)
+    ctypes.windll.user32.PostMessageW(AUTOMATION_TEXTEDIT_HWND, WM_KEYUP, VK_RETURN, 0)
+    ctypes.windll.user32.UpdateWindow(parent)
+    ctypes.windll.user32.RedrawWindow(
+        parent,
+        None,
+        None,
+        0x85  # RDW_UPDATENOW | RDW_ALLCHILDREN
+    )
+    while len(get_editbox_textbuf(AUTOMATION_TEXTEDIT_HWND)) > 0:
+        continue
+    attach_and_focus(info.hwndFocus)
+
 class ModifyableVirtualNamedInput(VirtualNamedInput):
     def __init__(self, name: str):
         super().__init__(name)
@@ -1834,22 +1949,39 @@ def submit():
     print("--- Submitting transcript")
     colorize("green", 1)
     block_problematic_inputs()
-    global IS_RADIO
-    try:
-        radio = IS_RADIO
-        if radio:
-            label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
-            transcript = "; " + transcript
-        if use_say:
-            submit_say(transcript)
-        else:
-            submit_chat(transcript)
-    except:
-        raise
-    finally:
+    success = threading.Event()
+    def perform_submission():
+        nonlocal transcript
+        global IS_RADIO
+        try:
+            radio = IS_RADIO
+            if radio:
+                label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
+                transcript = "; " + transcript
+            if use_say:
+                submit_say(transcript)
+            elif use_hwnd:
+                submit_automation(transcript)
+            else:
+                submit_chat(transcript)
+        except:
+            raise
+        finally:
+            unblock_problematic_inputs()
+            IS_RADIO = False
+            set_radio_colors()
+        success.set()
+    spawn_thread(perform_submission)
+    def wait_and_unblock():
+        time.sleep(5)
+        if success.is_set():
+            return
         unblock_problematic_inputs()
-    IS_RADIO = False
-    set_radio_colors()
+        extramessage = ""
+        if use_hwnd:
+            extramessage = "\nUsing the HWND output system WILL NOT WORK if you press one of the chat bar buttons!\nMake sure you don't have Say, Whisper, Me, or OOC pressed or this WILL happen!"
+        messagebox.showwarning("Excessive output delay!", f"Sumbitting the transcript took longer than 5 seconds, aborting.{extramessage}")
+    spawn_thread(wait_and_unblock)
 
 def reject():
     global state
@@ -2023,9 +2155,14 @@ class FakeASRModel:
     def transcribe(self, args: list[str]) -> tuple[ObjectWithTextAttributeWhichIsAString]:
         return (ObjectWithTextAttributeWhichIsAString("skipped model loading"),)
 
+def _lazy_get_dreamseeker_hwnd():
+    if use_hwnd:
+        _get_dreamseeker_editbox_hwnd()
+
 def skip_model_load(final: Box):
     global asr_model
     asr_model = FakeASRModel()
+    _lazy_get_dreamseeker_hwnd()
     final.value = True
 
 def has_nvidia_gpu() -> bool:
@@ -2270,6 +2407,26 @@ def load_model(final: Box, can_spin: Box, loading_text: Box):
         def confirm_cpu():
             messagebox.showwarning("STT Loaded to CPU", "The speech-to-text model was loaded to your CPU.\nDisable this warning in the config by changing warn_on_cpu to false.")
         confirm_cpu()
+    tk_config(label, text="Locating dreamseeker.exe")
+    hwnd_ok = True
+    try:
+        _lazy_get_dreamseeker_hwnd()
+    except pywinauto.ElementNotFoundError as e:
+        hwnd_ok = False
+    except ProcessNotFoundError as e:
+        hwnd_ok = False
+    if not hwnd_ok:
+        while True:
+            try:
+                tk_config(label, text="Locating dreamseeker.exe")
+                _lazy_get_dreamseeker_hwnd()
+                break
+            except pywinauto.ElementNotFoundError as e:
+                tk_config(label, text="Waiting for SS13 to load...")
+                time.sleep(1)
+            except ProcessNotFoundError as e:
+                tk_config(label, text="Waiting for SS13 to be launched...")
+                time.sleep(1)
     final.value = True
 
 def advance_wheel(wheel: str) -> str:

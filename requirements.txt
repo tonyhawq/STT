@@ -24,3 +24,4 @@ pyannote.metrics
 IPython
 huggingface_hub
 psutil
+pywinauto
