@@ -882,12 +882,15 @@ class Control:
         self.release = release
         self.pressed = False
         self.pressed_by = 0
+        self.press_lock = threading.RLock()
         def press_hook():
-            self._check_press()
-            self.pressed_by += 1
+            with self.press_lock:
+                self._check_press()
+                self.pressed_by += 1
         def release_hook():
-            self.pressed_by -= 1
-            self._check_release()
+            with self.press_lock:
+                self.pressed_by -= 1
+                self._check_release()
         self.press_hook = press_hook
         self.release_hook = release_hook
 
@@ -900,9 +903,10 @@ class Control:
             self.release()
 
     def is_pressed(self) -> bool:
-        for control in self.controlled_by:
-            if control.is_pressed():
-                return True
+        with self.press_lock:
+            for control in self.controlled_by:
+                if control.is_pressed():
+                    return True
         return False
         
 autosend = False
@@ -1070,7 +1074,7 @@ def show_version_info(text: str, changelog: Changelog, version: str):
         
 def fetch_changelog() -> Changelog:
     url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
-    response = requests.get(url, timeout=1).json()
+    response = requests.get(url, timeout=5).json()
     changelog_url = None
     release_version = response.get('tag_name', 'error')
     for asset in response.get("assets", []):
@@ -1079,14 +1083,14 @@ def fetch_changelog() -> Changelog:
             break
     if changelog_url is None:
         raise RuntimeError(f"No file with name changelog.txt found for release {release_version}")
-    raw_log = requests.get(changelog_url, timeout=1).text
+    raw_log = requests.get(changelog_url, timeout=5).text
     print(raw_log)
     return Changelog.parse(raw_log, release_version)
 
 def latest_version() -> str:
     url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
     try:
-        response = requests.get(url, timeout=1)
+        response = requests.get(url, timeout=5)
     except:
         print("No internet connection.")
         return "0.0.0"
@@ -1206,6 +1210,7 @@ def _set_simple_control(aliases: list[Pressable], name: str, action: typing.Call
     for alias in aliases:
         if alias in CONTROLBUTTONS_BY_KEY:
             button = CONTROLBUTTONS_BY_KEY[alias]
+            collected.append(button)
             button.add_press(control.press_hook)
             button.add_release(control.release_hook)
             # because suppression is always an OR operation
@@ -1880,7 +1885,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
                 messagebox.showwarning("STT Couldn't refresh", "Couldn't find dreamseeker.exe. Is SS13 running?")
                 window.after(0, hide_progressbar)    
             except Exception as e:
-                messagebox.showwarning("STT Couldn't refresh", "Encountered an exception while trying to refresh available text inputs: {e}")
+                messagebox.showwarning("STT Couldn't refresh", f"Encountered an exception while trying to refresh available text inputs: {e}")
                 window.after(0, hide_progressbar)
             finally:
                 nonlocal is_refreshing
