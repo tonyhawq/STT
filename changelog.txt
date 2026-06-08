@@ -1,11 +1,12 @@
 ---------------------------------------------------------------------------------------------------
-Version: 0.0.18
+Version: 1.0.0
 Date: 2026-6-8
   Name:
-    - The HWND update
+    - Release 1.0
   Headline:
     - Adds a super-low-latency chat option
   Features:
+    - Adds installer.py which manages installation after python is initialized
     - Adds a chat submission option that directly sets the value of the input box
   Changes:
     - Moves the internals of the app to data/
@@ -16,6 +17,7 @@ Date: 2026-6-8
     - Fixes Control::is_pressed not correctly reporting if one of the Control's ControlButtons was in CONTROLBUTTONS_BY_KEY.
     - Fixes a few edge cases surrounding inputs being blocked and never unblocked
     - Fixes some tkinter gui updates not happening on the main thread
+    - Assorted locking / threading preemtive bugfixes
 ---------------------------------------------------------------------------------------------------
 Version: 0.0.17
 Date: 2026-6-6
