@@ -53,7 +53,7 @@ automation_id = 0
 # of this speech to text app.
 skip_model_load = false
 # Where is the STT model file located?
-path_to_model = "model/"
+path_to_model = "data/model/"
 # Warns you if the model is loaded to the CPU
 # instead of the GPU. Disable if you don't
 # have an NVIDIA card or don't care about

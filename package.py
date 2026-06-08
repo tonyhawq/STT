@@ -21,15 +21,16 @@ class Packageable:
         return Packageable(path=path, ignore=ignore, is_dir=True)
 
 files_to_package: list[Packageable] = [
-    Packageable.file("exampleconfig.toml"),
-    Packageable.file("examplefilters.toml"),
+    Packageable.file("config/exampleconfig.toml"),
+    Packageable.file("config/examplefilters.toml"),
     Packageable.file("readme.md"),
     Packageable.file("requirements.txt"),
-    Packageable.file("debug.bat"),
-    Packageable.file("run.bat"),
+    Packageable.file("data/debug.bat"),
+    Packageable.file("data/run.bat"),
     Packageable.file("setup.bat"),
-    Packageable.file("stt.py"),
-    Packageable.file("changelog.txt"),
+    Packageable.file("data/stt.py"),
+    Packageable.file("data/installer.py"),
+    Packageable.file("data/changelog.txt"),
     Packageable.directory("embedded"),
     Packageable.directory("filters", ignore=[Packageable.directory("filters/__pycache__")])
 ]

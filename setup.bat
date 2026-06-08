@@ -3,11 +3,6 @@ for /F %%a in ('echo prompt $E^| cmd') do set "ESC=%%a"
 echo ------------------------------------------------------
 echo %ESC%[5;93mThis script will freeze while uninstalling setuptools!%ESC%[0m
 echo ------------------------------------------------------
-echo Do not close this window! It is just installing the
-echo           2.5GB of python libraries!
-echo ------------------------------------------------------
-echo The script will let you know when installing is done!
-echo ------------------------------------------------------
 
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -39,17 +34,21 @@ if exist venv (
 ) ELSE (
     echo Creating virtual environment...
     python -m venv venv
-    echo ------------------------------------------------------
-    echo  Typically hangs on Uninstalling setuptools-65.5.0...
-    echo %ESC%[5;93m          Wait for Installation Complete!%ESC%[0m
-    echo ------------------------------------------------------
-    echo         Press any key when ready to install.
-    echo ------------------------------------------------------
-    pause
+    powershell -NoProfile -Command ^ "$h=[Console]::OpenStandardOutput();"
 )
 echo Installing deps...
-venv\Scripts\python.exe -m pip install -r requirements.txt --progress-bar=on
+venv\Scripts\python.exe data/installer.py
+if %ERRORLEVEL% neq 0 (
+    echo ------------------------------------------------------
+    echo               Installation Failed!
+    echo ------------------------------------------------------
+    echo Error code: %ERRORLEVEL%
+    pause
+    exit /b %ERRORLEVEL%
+)
+move /Y "%~dp0data\run.bat" "%~dp0run.bat"
+move /Y "%~dp0data\debug.bat" "%~dp0debug.bat"
 echo ------------------------------------------------------
-echo               Installation complete!
+echo               Installation Complete!
 echo ------------------------------------------------------
 pause

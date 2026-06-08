@@ -15,3 +15,11 @@ embedded/*
 userconfig.json
 userconfig.toml
 filters.toml
+data/model*
+data/logs/*
+config/userconfig.toml
+config/filters.toml
+run.bat
+debug.bat
+!data/run.bat
+!data/debug.bat

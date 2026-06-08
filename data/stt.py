@@ -67,10 +67,13 @@ T = typing.TypeVar('T')
 U = typing.TypeVar('U')
 V = typing.TypeVar('V')
 
-CONFIG_FILENAME = "userconfig.toml"
-CONFIG_BACKUP_FILENAME = "exampleconfig.toml"
-FILTERCONFIG_FILENAME = "filters.toml"
-FILTERCONFIG_BACKUP_FILENAME = "examplefilters.toml"
+DATA_PATH = "data/"
+CONFIG_PATH = "config/"
+
+CONFIG_FILENAME = CONFIG_PATH + "userconfig.toml"
+CONFIG_BACKUP_FILENAME = CONFIG_PATH + "exampleconfig.toml"
+FILTERCONFIG_FILENAME = CONFIG_PATH + "filters.toml"
+FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
 
 root = tk.Tk()
 root.config(bg="white")
@@ -82,7 +85,7 @@ root.minsize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
 label_frame = tk.Frame(root, width = DEFAULT_WINDOW_WIDTH, height = DEFAULT_WINDOW_HEIGHT, bg="white")
 label_frame.pack_propagate(False)
 label_frame.pack(padx=0, pady=0)
-label = tk.Label(label_frame, text="Pre-Init", wraplength=290, bg="white", justify="center", font=("Arial", 12))
+label = tk.Label(label_frame, text="Pre-Init", bg="white", justify="center", font=("Arial", 12))
 label.pack(expand=True)
 
 _registered_tk_hooks: dict[str, list[typing.Callable]] = {}
@@ -106,6 +109,10 @@ def on_resize(event):
     # This a tk hook, so it's on the main thread
     label_frame.config(width=event.width, height=max(100, label_frame.winfo_height()))
 
+def thook_update_label_wrap(event):
+    label.config(wraplength=event.width - 10)
+
+label_frame.bind("<Configure>", thook_update_label_wrap)
 register_tkhook("<Configure>", on_resize)
 
 _skip_model_loading = False
@@ -218,7 +225,8 @@ def main_thread(func):
 def main_thread_async(func):
     def wrapper(*args, **kwargs):
         if threading.current_thread() is threading.main_thread():
-            raise RuntimeError("Attempted to asynchronously call a function that is annotated as main_thread while in the main thread")
+            func(*args, **kwargs)
+            return
         def afterwrapper():
             func(*args, **kwargs)
         root.after(0, afterwrapper)
@@ -244,8 +252,8 @@ def _set_mbox_time():
 
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
-        filename = "logs/" + str(time.time()) + ".log"
-        with io.open("current.log", "w") as log:
+        filename = DATA_PATH + "logs/" + str(time.time()) + ".log"
+        with io.open(DATA_PATH + "current.log", "w") as log:
             log.write(context)
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         with io.open(filename, "w") as log:
@@ -900,7 +908,7 @@ class Control:
 autosend = False
 use_say = False
 use_hwnd = False
-hwnd_automation_id = 0
+hwnd_automation_id: int = 0
 allow_version_checking = True
 allow_cpu_asr = True
 chat_delay = 0
@@ -1630,13 +1638,16 @@ def _get_dreamseeker_pid() -> int:
             return proc.info["pid"]
     raise ProcessNotFoundError("Couldn't find dreamseeker.exe")
 
-def _get_dreamseeker_editbox_hwnd():
-    global AUTOMATION_TEXTEDIT
-    global AUTOMATION_TEXTEDIT_HWND
+def _find_dreamseeker_window() -> pywinauto.WindowSpecification:
     print("Locating dreamseeker pid...")
     pid = _get_dreamseeker_pid()
     print(f"finding chat entry bar from automation_id {hwnd_automation_id}")
-    AUTOMATION_TEXTEDIT = pywinauto.Application(backend="uia").connect(process=pid).top_window().child_window(
+    return pywinauto.Application(backend="uia").connect(process=pid).top_window()
+
+def _get_dreamseeker_editbox_hwnd():
+    global AUTOMATION_TEXTEDIT
+    global AUTOMATION_TEXTEDIT_HWND
+    AUTOMATION_TEXTEDIT = _find_dreamseeker_window().child_window(
         auto_id=str(hwnd_automation_id),
         control_type="Edit"
     )
@@ -1659,7 +1670,7 @@ def set_config_hwnd_automation_id(auto_id: int):
         with open(CONFIG_FILENAME, "r", encoding="utf-8") as f:
             config = tomlkit.parse(f.read())
 
-        config["output"]["hwnd_settings"]["automation_id"] = auto_id
+        config["output"]["hwnd_settings"]["automation_id"] = int(auto_id)
 
         with open(CONFIG_FILENAME, "w", encoding="utf-8") as f:
             f.write(tomlkit.dumps(config))
@@ -1714,10 +1725,12 @@ def ask_and_change_automation_id(auto_id: int):
     spawn_thread(worker)
 
 def ask_for_auto_chatbox():
+    bar = ShittyLoadingBar("Locating chat box", "Scanning dreamseeker for available edit boxes...", lambda b: ...)
     edits = _get_dreamseeker_all_editboxes()
     if len(edits) == 1:
         edit_obj = edits[0]
         highlight_autogui_elem(edit_obj)
+        bar.end()
         if messagebox.askyesno("Autodetected chat box", "Is this the correct chat box?"):
             stop_current_highlight()
             FOUND_NEW_AUTOMATION_HWND.set()
@@ -1728,6 +1741,32 @@ def ask_for_auto_chatbox():
             ask_and_change_automation_id(edit_obj.automation_id())
             return
         stop_current_highlight()
+    else:
+        bar.end()
+
+class ShittyLoadingBar:
+    def __init__(self, title: str, text: str, destroy_callback: typing.Callable[["ShittyLoadingBar"], typing.Any], w: int | None = None, h: int | None = None):
+        self.window = tk.Toplevel()
+        self.window.title(title)
+        if w is None:
+            w = 450
+        if h is None:
+            h = 150
+        self.window.geometry(f"{w}x{h}")
+        self.window.resizable(True, True)
+
+        def _this_destroy_callback(obj = self):
+            destroy_callback(obj)
+        
+        self.window.protocol("WM_DELETE_WINDOW", _this_destroy_callback)
+        status_label = tk.Label(self.window, text=text, justify="center", font=("Arial", 10))
+        status_label.pack(pady=(20, 10))
+        progress = ttk.Progressbar(self.window, mode="indeterminate", length=350)
+        progress.pack(pady=10)
+        progress.start(10)
+
+    def end(self):
+        self.window.destroy()
 
 def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
     if not messagebox.askyesno("Can't find chat bar", "Can't find the SS13 chat bar. Would you like to pick a new chat bar?"):
@@ -1742,7 +1781,6 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
         stop_current_highlight()
     if FOUND_NEW_AUTOMATION_HWND.is_set():
         return False
-    
     is_window_open = True
     window = tk.Toplevel()
     window_close_event = threading.Event()
@@ -2288,30 +2326,7 @@ def skip_model_load(loading_text: Box[str], final: Box[bool]):
     asr_model = FakeASRModel()
     final.value = True
 
-def has_nvidia_gpu() -> bool:
-    try:
-        result = subprocess.run(
-            ["nvidia-smi"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
 EARLY_GIVEUP_INIT = False
-
-def pytorch_version_for_cuda_version(cuda_version: str) -> str | None:
-    try:
-        major, minor = map(int, cuda_version.split(".")[:2])
-        if major >= 12:
-            return "cu128"
-        if major == 11:
-            return "cu118"
-    except Exception:
-        pass
-    return None
 
 @main_thread
 def _download_pytorch_cuda():
@@ -2324,21 +2339,22 @@ def _download_pytorch_cuda():
     window.title("STT PyTorch Cuda Installer")
     window.geometry("700x500")
     setattr(window, "gpu_var", tk.StringVar(window, value="Detecting..."))
-    setattr(window, "cuda_var", tk.StringVar(window, value="Detecting..."))
+    setattr(window, "driver_var", tk.StringVar(window, value="Detecting..."))
     setattr(window, "recommendation_var", tk.StringVar(window, value="Detecting..."))
     gpu_var = getattr(window, "gpu_var")
-    cuda_var = getattr(window, "cuda_var")
+    driver_var = getattr(window, "driver_var")
     recommendation_var = getattr(window, "recommendation_var")
 
     ttk.Label(window, text="GPU:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
     ttk.Label(window, textvariable=gpu_var).grid(row=0, column=1, sticky="w")
 
     ttk.Label(window, text="CUDA Version:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(window, textvariable=cuda_var).grid(row=1, column=1, sticky="w")
+    ttk.Label(window, textvariable=driver_var).grid(row=1, column=1, sticky="w")
 
     ttk.Label(window, text="Recommended PyTorch Build:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
     ttk.Label(window, textvariable=recommendation_var).grid(row=2, column=1, sticky="w")
     cuda_tag = None
+    torch_version = None
 
     def suggested_cuda_URL() -> str:
         if cuda_tag is None:
@@ -2349,10 +2365,10 @@ def _download_pytorch_cuda():
         tk_config(install_button, state="disabled")
         def worker():
             try:
-                if cuda_tag is None:
+                if cuda_tag is None or torch_version is None:
                     return
                 cmd = [sys.executable, "-m", "pip", "install",
-                        "torch", "--index-url", suggested_cuda_URL()]
+                        f"torch=={torch_version}+{cuda_tag}", "--force-reinstall", "lightning<2.4.0", "fsspec==2024.12.0", "numpy==1.26.4", "--extra-index-url", suggested_cuda_URL()]
                 write_log("Running: ")
                 write_log(" ".join(cmd))
                 process = subprocess.Popen(
@@ -2361,6 +2377,7 @@ def _download_pytorch_cuda():
                     stderr=subprocess.STDOUT,
                     text=True
                 )
+                tk_config(label, text="Downloading PyTorch...")
                 if process.stdout is None:
                     raise RuntimeError("While running pytorch installer, stdout was None.")
                 for line in process.stdout:
@@ -2401,43 +2418,37 @@ def _download_pytorch_cuda():
     window.grid_columnconfigure(1, weight=1)
     write_log(" -- CUDA install log --")
     try:
-        write_log("Detecting NVIDIA GPU and CUDA version...")
+        write_log("Detecting installed GPU...")
         result = subprocess.run(
-            ["nvidia-smi"],
-            capture_output=True,
-            text=True,
-            check=True
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True
         )
-        gpu_name = "Unknown NVIDIA GPU"
-        match = re.search(
-            r"CUDA Version:\s*([0-9.]+)",
-            result.stdout
+        gpu_name = result.stdout.splitlines()[0].strip()
+        write_log(f"Found GPU {gpu_name}")
+        write_log("Detecting installed drivers...")
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True
         )
-        cuda_version = match.group(1) if match else "Unknown"
-        write_log(f"Found CUDA version {cuda_version}")
-        try:
-            gpu_query = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=name",
-                    "--format=csv,noheader"
-                ],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            gpu_name = gpu_query.stdout.splitlines()[0].strip()
-            write_log(f"Found GPU version {gpu_name}")
-        except Exception as e:
-            write_log(f"Encountered exception {e}")
+        driver_str = result.stdout.splitlines()[0].strip()
+        driver_version = float(re.findall(r"^\d+\.\d+", driver_str)[0])
+        write_log(f"Found driver version {driver_version}")
         gpu_var.set(gpu_name)
-        cuda_var.set(cuda_version)
-        cuda_tag = pytorch_version_for_cuda_version(cuda_version)
-        recommendation_var.set(cuda_tag if cuda_tag else "CPU Only")
+        driver_var.set(driver_str)
+        if driver_version >= 525.60:
+            cuda_tag = "cu126"
+            torch_version = "2.12.0"
+            recommendation_var.set("CUDA 12.6 (PyTorch v2.12.0)")
+        elif driver_version >= 450.80:
+            cuda_tag = "cu118"
+            torch_version = "2.2.2"
+            recommendation_var.set("CUDA 11.8 (PyTorch v2.2.2)")
+        else:
+            raise RuntimeError("No CUDA version available.")
     except Exception as e:
         write_log(f"No NVIDIA GPU detected.")
         gpu_var.set("No NVIDIA GPU detected")
-        cuda_var.set("N/A")
+        driver_var.set("N/A")
         recommendation_var.set("CPU Only")
         tk_config(install_button, state="disabled")
     finally:
@@ -2467,9 +2478,23 @@ def _load_model_get_hwnd(loading_text: Box[str]):
                 except ProcessNotFoundError:
                     continue
                 break
-        print("Coudln't locate dreamseeker.exe and associated chat box")
-        spawn_thread(_fallback_get_dreamseeker_editbox_hwnd)
+        print("Couldn't locate dreamseeker.exe and associated chat box")
+        should_fallback = False
+        fallback_tried = False
+        start = time.time()
         while True:
+            if not should_fallback:
+                try:
+                    if time.time() - start > 5:
+                        wind = _find_dreamseeker_window()
+                        if wind.texts()[0] != "BYOND: Your Game Is Starting":
+                            should_fallback = True
+                            start = time.time()
+                except Exception:
+                    pass
+            elif should_fallback and not fallback_tried and time.time() - start > 5:
+                spawn_thread(_fallback_get_dreamseeker_editbox_hwnd)
+                fallback_tried = True
             if SHOULD_LOOK_FOR_AUTOMATION_HWND:
                 try:
                     loading_text.value += " (locating)"
@@ -2496,16 +2521,23 @@ def load_model(final: Box[bool], can_spin: Box, loading_text: Box[str]):
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):
         tk_config(label, text=f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?")
+        @main_thread_async
+        def _resize_window_first():
+            if root.winfo_width() < 500:
+                root.minsize(500, root.winfo_height())
+        _resize_window_first()
         allowed = False
         def on_allow():
             nonlocal allowed
             allowed = True
         def on_deny():
-            root.quit()
+            quit_normal()
         allow = None
         deny = None
         @main_thread
         def create_buttons():
+            nonlocal allow
+            nonlocal deny
             allow = tk.Button(root, text="Allow", command=on_allow)
             deny = tk.Button(root, text="Deny", command=on_deny)
             allow.pack(padx=10, pady=10, side=tk.LEFT)
@@ -2516,10 +2548,10 @@ def load_model(final: Box[bool], can_spin: Box, loading_text: Box[str]):
             time.sleep(0.5)
         @main_thread
         def destroy_buttons():
-            while allow is None or deny is None:
-                time.sleep(0.5)
-            allow.destroy()
-            deny.destroy()
+            if allow is not None:
+                allow.destroy()
+            if deny is not None:
+                deny.destroy()
             on_force_geometry_change()
         destroy_buttons()
         can_spin.value = True
@@ -2530,6 +2562,10 @@ def load_model(final: Box[bool], can_spin: Box, loading_text: Box[str]):
             local_dir=path_to_model,
             local_dir_use_symlinks=False
             )
+        @main_thread
+        def _fix_window_size():
+            root.minsize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+        _fix_window_size()
     can_spin.value = True
 
     print("Initializing pytorch...")
@@ -2541,6 +2577,7 @@ def load_model(final: Box[bool], can_spin: Box, loading_text: Box[str]):
     print("cuda available:", torch.cuda.is_available())
     print("cuda version:", torch.version.cuda)
     if not torch.cuda.is_available() and not allow_cpu_asr:
+        loading_text.value = "Waiting for user input..."
         why_no_cuda = "Something went wrong."
         try:
             torch.cuda.current_device()

@@ -7,6 +7,10 @@ Date: 2026-6-8
     - Adds a super-low-latency chat option
   Features:
     - Adds a chat submission option that directly sets the value of the input box
+  Changes:
+    - Moves the internals of the app to data/
+    - Moves the config files to config/
+    - Setup.bat calls a new installer.py file which has a progressbar
   Bugfixes:
     - Fixes a few edge cases surrounding inputs being blocked and never unblocked
     - Fixes some tkinter gui updates not happening on the main thread
