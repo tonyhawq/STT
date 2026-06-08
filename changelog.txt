@@ -8,6 +8,7 @@ Date: 2026-6-8
   Features:
     - Adds installer.py which manages installation after python is initialized
     - Adds a chat submission option that directly sets the value of the input box
+    - Adds a loading bar to the changelog loading window
   Changes:
     - Moves the internals of the app to data/
     - Moves the config files to config/
