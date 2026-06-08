@@ -11,7 +11,9 @@ Date: 2026-6-8
     - Moves the internals of the app to data/
     - Moves the config files to config/
     - Setup.bat calls a new installer.py file which has a progressbar
+    - Combination hotkeys (ctrl + g, alt + b, etc..) that have "unbound" in them are parsed as an unbinding
   Bugfixes:
+    - Fixes Control::is_pressed not correctly reporting if one of the Control's ControlButtons was in CONTROLBUTTONS_BY_KEY.
     - Fixes a few edge cases surrounding inputs being blocked and never unblocked
     - Fixes some tkinter gui updates not happening on the main thread
 ---------------------------------------------------------------------------------------------------

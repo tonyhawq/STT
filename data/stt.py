@@ -799,10 +799,17 @@ class Pressable:
         # allows ctrl + p + x
         values = hotkey.split("+")
         pressables: list[list[Pressable]] = []
+        had_unbound = False
         for value in values:
             try:
                 if value.strip().lower() in ("unbound", "unset"):
+                    print(f"Parsing hotkey {hotkey} found \"{value}\" which matches an unbinding")
+                    had_unbound = True
                     continue
+                if had_unbound:
+                    print(f"Combination hotkey {hotkey} had an unbinding")
+                    pressables.clear()
+                    break
                 codes = Pressable._str_to_scancode(value)
                 aliases = []
                 for scancode in codes:
