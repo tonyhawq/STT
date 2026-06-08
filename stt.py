@@ -1666,12 +1666,83 @@ def set_config_hwnd_automation_id(auto_id: int):
     except Exception as e:
         _global_exception_handler(e, "setting config file")
 
+CURRENT_HIGHLIGHT: tk.Toplevel | None = None
+RUN_HIGHLIGHTS = True
+
+def highlight_autogui_elem(elem):
+    global CURRENT_HIGHLIGHT
+    if CURRENT_HIGHLIGHT is None:
+        CURRENT_HIGHLIGHT = tk.Toplevel()
+        CURRENT_HIGHLIGHT.overrideredirect(True)
+        CURRENT_HIGHLIGHT.attributes("-topmost", True)
+        CURRENT_HIGHLIGHT.attributes("-alpha", 0.1)
+                
+    rect = elem.rectangle()
+    CURRENT_HIGHLIGHT.geometry(f"{rect.width()}x{rect.height()}+{rect.left}+{rect.top}")
+
+def _tk_highlight_flasher_worker():
+    alpha_state = False
+    while RUN_HIGHLIGHTS:
+        time.sleep(0.5)
+        if CURRENT_HIGHLIGHT is None:
+            continue
+        alpha_state = not alpha_state
+        if alpha_state:
+            CURRENT_HIGHLIGHT.attributes("-alpha", 0.5)
+        else:
+            CURRENT_HIGHLIGHT.attributes("-alpha", 0.1)
+    if CURRENT_HIGHLIGHT is not None:
+        CURRENT_HIGHLIGHT.destroy()
+
+def stop_current_highlight():
+    global CURRENT_HIGHLIGHT
+    if CURRENT_HIGHLIGHT is None:
+        return
+    CURRENT_HIGHLIGHT.destroy()
+    CURRENT_HIGHLIGHT = None
+
+def stop_all_highlights():
+    global RUN_HIGHLIGHTS
+    RUN_HIGHLIGHTS = False
+
+spawn_thread(_tk_highlight_flasher_worker)
+
+def ask_and_change_automation_id(auto_id: int):
+    def worker():
+        if messagebox.askyesno("STT Change config?", "Would you like to set this chat box as your default?"):
+            set_config_hwnd_automation_id(auto_id)
+    spawn_thread(worker)
+
+def ask_for_auto_chatbox():
+    edits = _get_dreamseeker_all_editboxes()
+    if len(edits) == 1:
+        edit_obj = edits[0]
+        highlight_autogui_elem(edit_obj)
+        if messagebox.askyesno("Autodetected chat box", "Is this the correct chat box?"):
+            stop_current_highlight()
+            FOUND_NEW_AUTOMATION_HWND.set()
+            global AUTOMATION_TEXTEDIT_HWND
+            global AUTOMATION_TEXTEDIT
+            AUTOMATION_TEXTEDIT_HWND = edit_obj.handle
+            AUTOMATION_TEXTEDIT = edit_obj
+            ask_and_change_automation_id(edit_obj.automation_id())
+            return
+        stop_current_highlight()
+
 def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
     if not messagebox.askyesno("Can't find chat bar", "Can't find the SS13 chat bar. Would you like to pick a new chat bar?"):
         print("user denied finding a new chatbox")
         return False
     global SHOULD_LOOK_FOR_AUTOMATION_HWND
     SHOULD_LOOK_FOR_AUTOMATION_HWND = False
+    
+    try:
+        ask_for_auto_chatbox()
+    except Exception:
+        stop_current_highlight()
+    if FOUND_NEW_AUTOMATION_HWND.is_set():
+        return False
+    
     is_window_open = True
     window = tk.Toplevel()
     window_close_event = threading.Event()
@@ -1699,24 +1770,6 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
 
     rows = []
 
-    current_highlight_box: tk.Toplevel | None = None
-
-    def highlight_worker():
-        alpha_state = False
-        while is_window_open:
-            time.sleep(0.5)
-            if current_highlight_box is None:
-                continue
-            alpha_state = not alpha_state
-            if alpha_state:
-                current_highlight_box.attributes("-alpha", 0.5)
-            else:
-                current_highlight_box.attributes("-alpha", 0.1)
-        if current_highlight_box is not None:
-            current_highlight_box.destroy()
-    
-    spawn_thread(highlight_worker)
-
     def rebuild_with_edits(edits: list):
         for i, edit in enumerate(edits):
             row = tk.Frame(scroll_frame, bd=1, relief="solid")
@@ -1725,20 +1778,9 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
             name_label = tk.Label(row, text=f"ID {edit.automation_id()}", anchor="w")
             name_label.pack(side="left", fill="x", expand=True, padx=6)
 
-            def highlight(edit_obj):
-                nonlocal current_highlight_box
-                if current_highlight_box is None:
-                    current_highlight_box = tk.Toplevel()
-                    current_highlight_box.overrideredirect(True)
-                    current_highlight_box.attributes("-topmost", True)
-                    current_highlight_box.attributes("-alpha", 0.1)
-                
-                rect = edit_obj.rectangle()
-                current_highlight_box.geometry(f"{rect.width()}x{rect.height()}+{rect.left}+{rect.top}")
-
             def _highlight_wrap(edit_obj=edit):
                 try:
-                    highlight(edit_obj)
+                    highlight_autogui_elem(edit_obj)
                 except Exception as e:
                     print(f"Encountered exception while highlighting edit obj: {e}")
                     window.after(0, refresh)
@@ -1746,10 +1788,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
             def select(edit_obj):
                 auto_id = int(edit_obj.automation_id())
                 if hwnd_automation_id != auto_id:
-                    def ask_change_config():
-                        if messagebox.askyesno("STT Change config?", "Would you like to set this chat box as your default?"):
-                            set_config_hwnd_automation_id(auto_id)
-                    spawn_thread(ask_change_config)
+                    ask_and_change_automation_id(auto_id)
                 FOUND_NEW_AUTOMATION_HWND.set()
                 global AUTOMATION_TEXTEDIT
                 global AUTOMATION_TEXTEDIT_HWND
