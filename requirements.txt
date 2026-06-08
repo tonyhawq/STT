@@ -25,3 +25,4 @@ IPython
 huggingface_hub
 psutil
 pywinauto
+tomlkit

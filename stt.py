@@ -10,6 +10,7 @@ try:
     import time
     import wave
     import tomllib
+    import tomlkit
     import typing
     import pyperclip
     import keyboard
@@ -1615,28 +1616,216 @@ def get_editbox_textbuf(hwnd) -> str:
     )
     return _editboxtextbuf.value
 
+SHOULD_LOOK_FOR_AUTOMATION_HWND = True
+FOUND_NEW_AUTOMATION_HWND = threading.Event()
 AUTOMATION_TEXTEDIT: pywinauto.application.WindowSpecification | None = None
 AUTOMATION_TEXTEDIT_HWND = None
 
 class ProcessNotFoundError(RuntimeError):
     pass
 
+def _get_dreamseeker_pid() -> int:
+    for proc in psutil.process_iter(["pid", "name"]):
+        if proc.info["name"] and proc.info["name"].lower() == "dreamseeker.exe":
+            return proc.info["pid"]
+    raise ProcessNotFoundError("Couldn't find dreamseeker.exe")
+
 def _get_dreamseeker_editbox_hwnd():
     global AUTOMATION_TEXTEDIT
     global AUTOMATION_TEXTEDIT_HWND
     print("Locating dreamseeker pid...")
-    for proc in psutil.process_iter(["pid", "name"]):
-        print(f"  Found process {proc.info['name']} with pid {proc.info['pid']}")
-        if proc.info["name"] and proc.info["name"].lower() == "dreamseeker.exe":
-            pid = proc.info["pid"]
-            break
-    else:
-        raise ProcessNotFoundError("Couldn't find dreamseeker.exe")
+    pid = _get_dreamseeker_pid()
+    print(f"finding chat entry bar from automation_id {hwnd_automation_id}")
     AUTOMATION_TEXTEDIT = pywinauto.Application(backend="uia").connect(process=pid).top_window().child_window(
         auto_id=str(hwnd_automation_id),
         control_type="Edit"
     )
     AUTOMATION_TEXTEDIT_HWND = AUTOMATION_TEXTEDIT.handle
+
+def _fallback_get_dreamseeker_editbox_hwnd():
+    print("_fallback_get_dreamseeker_editbox_hwnd called")
+    try:
+        _fallback_get_dreamseeker_editbox_hwnd_raw_impl()
+    except Exception as e:
+        _global_exception_handler(e)
+        pass
+
+def _get_dreamseeker_all_editboxes():
+    pid = _get_dreamseeker_pid()
+    return pywinauto.Application(backend="uia").connect(process=pid).top_window().descendants(control_type="Edit")
+
+def set_config_hwnd_automation_id(auto_id: int):
+    try:
+        with open(CONFIG_FILENAME, "r", encoding="utf-8") as f:
+            config = tomlkit.parse(f.read())
+
+        config["output"]["hwnd_settings"]["automation_id"] = auto_id
+
+        with open(CONFIG_FILENAME, "w", encoding="utf-8") as f:
+            f.write(tomlkit.dumps(config))
+    except Exception as e:
+        _global_exception_handler(e, "setting config file")
+
+def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
+    if not messagebox.askyesno("Can't find chat bar", "Can't find the SS13 chat bar. Would you like to pick a new chat bar?"):
+        print("user denied finding a new chatbox")
+        return False
+    global SHOULD_LOOK_FOR_AUTOMATION_HWND
+    SHOULD_LOOK_FOR_AUTOMATION_HWND = False
+    is_window_open = True
+    window = tk.Toplevel()
+    window_close_event = threading.Event()
+    def window_close_hook():
+        global SHOULD_LOOK_FOR_AUTOMATION_HWND
+        nonlocal is_window_open
+        is_window_open = False
+        window.destroy()
+        window_close_event.set()
+        if not FOUND_NEW_AUTOMATION_HWND.is_set():
+            SHOULD_LOOK_FOR_AUTOMATION_HWND = True
+            FOUND_NEW_AUTOMATION_HWND.set()
+    window.protocol("WM_DELETE_WINDOW", window_close_hook)
+    window.title("STT Chat Bar Selector")
+    window.attributes("-topmost", True)
+    window.geometry("700x500")
+    header = tk.Frame(window)
+    header.pack(fill="x", padx=8, pady=6)
+
+    progress = ttk.Progressbar(window, mode="indeterminate")
+    progress.pack(fill="x", padx=8, pady=(0, 6))
+    progress.pack_forget()  # hidden initially
+    
+    is_refreshing = False
+
+    rows = []
+
+    current_highlight_box: tk.Toplevel | None = None
+
+    def highlight_worker():
+        alpha_state = False
+        while is_window_open:
+            time.sleep(0.5)
+            if current_highlight_box is None:
+                continue
+            alpha_state = not alpha_state
+            if alpha_state:
+                current_highlight_box.attributes("-alpha", 0.5)
+            else:
+                current_highlight_box.attributes("-alpha", 0.1)
+        if current_highlight_box is not None:
+            current_highlight_box.destroy()
+    
+    spawn_thread(highlight_worker)
+
+    def rebuild_with_edits(edits: list):
+        for i, edit in enumerate(edits):
+            row = tk.Frame(scroll_frame, bd=1, relief="solid")
+            row.pack(fill="x", pady=2)
+            
+            name_label = tk.Label(row, text=f"ID {edit.automation_id()}", anchor="w")
+            name_label.pack(side="left", fill="x", expand=True, padx=6)
+
+            def highlight(edit_obj):
+                nonlocal current_highlight_box
+                if current_highlight_box is None:
+                    current_highlight_box = tk.Toplevel()
+                    current_highlight_box.overrideredirect(True)
+                    current_highlight_box.attributes("-topmost", True)
+                    current_highlight_box.attributes("-alpha", 0.1)
+                
+                rect = edit_obj.rectangle()
+                current_highlight_box.geometry(f"{rect.width()}x{rect.height()}+{rect.left}+{rect.top}")
+
+            def _highlight_wrap(edit_obj=edit):
+                try:
+                    highlight(edit_obj)
+                except Exception as e:
+                    print(f"Encountered exception while highlighting edit obj: {e}")
+                    window.after(0, refresh)
+
+            def select(edit_obj):
+                auto_id = int(edit_obj.automation_id())
+                if hwnd_automation_id != auto_id:
+                    def ask_change_config():
+                        if messagebox.askyesno("STT Change config?", "Would you like to set this chat box as your default?"):
+                            set_config_hwnd_automation_id(auto_id)
+                    spawn_thread(ask_change_config)
+                FOUND_NEW_AUTOMATION_HWND.set()
+                global AUTOMATION_TEXTEDIT
+                global AUTOMATION_TEXTEDIT_HWND
+                AUTOMATION_TEXTEDIT_HWND = edit_obj.handle
+                AUTOMATION_TEXTEDIT = edit_obj
+                window_close_hook()
+
+            def _select_wrap(edit_obj=edit):
+                try:
+                    select(edit_obj)
+                except Exception as e:
+                    print(f"Encountered exception while selecting edit obj: {e}")
+                    window.after(0, refresh)
+            
+            def copy_id(edit_obj=edit):
+                try:
+                    pyperclip.copy(str(edit_obj.automation_id()))
+                except Exception as e:
+                    print(f"Encountered exception while copying id of edit obj: {e}")
+                    window.after(0, refresh)
+            
+            tk.Button(row, text="Highlight", command=_highlight_wrap).pack(side="right", padx=4)
+            tk.Button(row, text="Copy ID", command=copy_id).pack(side="right", padx=4)
+            tk.Button(row, text="Select", command=_select_wrap).pack(side="right", padx=4)
+
+            rows.append(row)
+
+    def show_progressbar():
+        progress.pack(fill="x", padx=8, pady=(0, 6))
+        progress.start(10)
+    
+    def hide_progressbar():
+        progress.stop()
+        progress.pack_forget()
+
+    def refresh():
+        nonlocal is_refreshing
+        nonlocal rows
+        if is_refreshing:
+            return
+        is_refreshing = True
+        for w in rows:
+            w.destroy()
+        rows.clear()
+        def get_editboxes():
+            try:
+                edits = _get_dreamseeker_all_editboxes()
+                window.after(0, hide_progressbar)
+                window.after(0, rebuild_with_edits, edits)
+            except ProcessNotFoundError as e:
+                messagebox.showwarning("STT Couldn't refresh", "Couldn't find dreamseeker.exe. Is SS13 running?")
+                window.after(0, hide_progressbar)    
+            except Exception as e:
+                messagebox.showwarning("STT Couldn't refresh", "Encountered an exception while trying to refresh available text inputs: {e}")
+                window.after(0, hide_progressbar)
+            finally:
+                nonlocal is_refreshing
+                is_refreshing = False
+        show_progressbar()
+        spawn_thread(get_editboxes)
+
+    tk.Label(header, text="Available text inputs:", font=("Segoe UI", 10, "bold")).pack(side="left")
+    tk.Button(header, text="Refresh", command=refresh).pack(side="right")
+    container = tk.Frame(window)
+    container.pack(fill="both", expand=True, padx=8, pady=6)
+
+    canvas = tk.Canvas(container, highlightthickness=0)
+    scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+    scroll_frame = tk.Frame(canvas)
+    scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    refresh()
+    return False
 
 class GUITHREADINFO(ctypes.Structure):
     _fields_ = [
@@ -2054,10 +2243,10 @@ def _lazy_get_dreamseeker_hwnd():
     if use_hwnd:
         _get_dreamseeker_editbox_hwnd()
 
-def skip_model_load(final: Box):
+def skip_model_load(loading_text: Box[str], final: Box[bool]):
+    _load_model_get_hwnd(loading_text)
     global asr_model
     asr_model = FakeASRModel()
-    _lazy_get_dreamseeker_hwnd()
     final.value = True
 
 def has_nvidia_gpu() -> bool:
@@ -2216,9 +2405,54 @@ def _download_pytorch_cuda():
         write_log(f"PyTorch install URL:")
         write_log(f"  {suggested_cuda_URL()}")
 
-def load_model(final: Box, can_spin: Box, loading_text: Box):
+def _load_model_get_hwnd(loading_text: Box[str]):
+    loading_text.value = "Locating dreamseeker.exe"
+    hwnd_ok = True
+    hwnd_bad_reason: pywinauto.ElementNotFoundError | ProcessNotFoundError | None = None 
+    try:
+        print("lazy locaing dreamseeker.exe")
+        _lazy_get_dreamseeker_hwnd()
+    except pywinauto.ElementNotFoundError as e:
+        hwnd_ok = False
+        hwnd_bad_reason = e
+    except ProcessNotFoundError as e:
+        hwnd_ok = False
+        hwnd_bad_reason = e
+    if not hwnd_ok:
+        if type(hwnd_bad_reason) is ProcessNotFoundError:
+            loading_text.value = "Waiting for dreamseeker.exe..."
+            while True:
+                time.sleep(1)
+                try:
+                    _get_dreamseeker_pid()
+                except ProcessNotFoundError:
+                    continue
+                break
+        print("Coudln't locate dreamseeker.exe and associated chat box")
+        spawn_thread(_fallback_get_dreamseeker_editbox_hwnd)
+        while True:
+            if SHOULD_LOOK_FOR_AUTOMATION_HWND:
+                try:
+                    loading_text.value += " (locating)"
+                    _lazy_get_dreamseeker_hwnd()
+                    break
+                except pywinauto.ElementNotFoundError as e:
+                    loading_text.value = "Looking for the chat box..."
+                    time.sleep(1)
+                except ProcessNotFoundError as e:
+                    loading_text.value = "Waiting for SS13 to be launched..."
+                    time.sleep(1)
+            else:
+                loading_text.value = "Waiting for new chat box to be selected..."
+                FOUND_NEW_AUTOMATION_HWND.wait()
+                if not SHOULD_LOOK_FOR_AUTOMATION_HWND:
+                    break
+                loading_text.value = "Using default chat box..."
+
+def load_model(final: Box[bool], can_spin: Box, loading_text: Box[str]):
     if _skip_model_loading:
-        return skip_model_load(final)
+        can_spin.value = True
+        return skip_model_load(loading_text, final)
     model_filename = "parakeet-tdt-0.6b-v2.nemo"
     model_path = path_to_model + model_filename
     if not os.path.exists(model_path):
@@ -2302,26 +2536,7 @@ def load_model(final: Box, can_spin: Box, loading_text: Box):
         def confirm_cpu():
             messagebox.showwarning("STT Loaded to CPU", "The speech-to-text model was loaded to your CPU.\nDisable this warning in the config by changing warn_on_cpu to false.")
         confirm_cpu()
-    tk_config(label, text="Locating dreamseeker.exe")
-    hwnd_ok = True
-    try:
-        _lazy_get_dreamseeker_hwnd()
-    except pywinauto.ElementNotFoundError as e:
-        hwnd_ok = False
-    except ProcessNotFoundError as e:
-        hwnd_ok = False
-    if not hwnd_ok:
-        while True:
-            try:
-                tk_config(label, text="Locating dreamseeker.exe")
-                _lazy_get_dreamseeker_hwnd()
-                break
-            except pywinauto.ElementNotFoundError as e:
-                tk_config(label, text="Waiting for SS13 to load...")
-                time.sleep(1)
-            except ProcessNotFoundError as e:
-                tk_config(label, text="Waiting for SS13 to be launched...")
-                time.sleep(1)
+    _load_model_get_hwnd(loading_text)
     final.value = True
 
 def advance_wheel(wheel: str) -> str:
