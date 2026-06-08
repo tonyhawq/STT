@@ -46,7 +46,7 @@ chat_delay = 0.75
 # Click on the chat bar
 # Look for the text "automation id"
 # Write the number here.
-automation_id = 1013
+automation_id = 0
 
 [meta]
 # Debug option. Disables the speech to text function
