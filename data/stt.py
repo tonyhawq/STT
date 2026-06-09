@@ -1055,6 +1055,7 @@ def show_changelogs_after(current: str):
     url = "https://api.github.com/repos/tonyhawq/STT/releases"
     dblprint(f"Getting releases from {url}...")
     response = requests.get(url, timeout=5)
+    response.raise_for_status()
     releases = response.json()
     logs = []
     for release in releases:
@@ -1068,7 +1069,9 @@ def show_changelogs_after(current: str):
                 changelog_url = asset["browser_download_url"]
                 dblprint(f"Got url for changelog at {changelog_url}, downloading...")
                 try:
-                    raw_log = requests.get(changelog_url).text
+                    raw_log_response = requests.get(changelog_url)
+                    raw_log_response.raise_for_status()
+                    raw_log = raw_log_response.text
                     dblprint(f"Parsing {release['tag_name']}...")
                     logs.append(Changelog.parse(raw_log, version))
                 except Exception as e:
@@ -1086,7 +1089,9 @@ def show_version_info(text: str, changelog: Changelog, version: str):
         
 def fetch_changelog() -> Changelog:
     url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
-    response = requests.get(url, timeout=5).json()
+    response = requests.get(url, timeout=5)
+    response.raise_for_status()
+    response = response.json()
     changelog_url = None
     release_version = response.get('tag_name', 'error')
     for asset in response.get("assets", []):
@@ -1095,7 +1100,9 @@ def fetch_changelog() -> Changelog:
             break
     if changelog_url is None:
         raise RuntimeError(f"No file with name changelog.txt found for release {release_version}")
-    raw_log = requests.get(changelog_url, timeout=5).text
+    raw_log_response = requests.get(changelog_url, timeout=5)
+    raw_log_response.raise_for_status()
+    raw_log = raw_log_response.text
     print(raw_log)
     return Changelog.parse(raw_log, release_version)
 
@@ -1103,6 +1110,7 @@ def latest_version() -> str:
     url = "https://api.github.com/repos/tonyhawq/STT/releases/latest"
     try:
         response = requests.get(url, timeout=5)
+        response.raise_for_status()
     except:
         print("No internet connection.")
         return "0.0.0"

@@ -6,7 +6,7 @@ Date: 2026-6-8
   Headline:
     - Adds a super-low-latency chat option
   Features:
-    - Adds installer.py which manages installation after python is initialized
+    - Adds installer.py which manages installation after python is installed and the venv exists
     - Adds a chat submission option that directly sets the value of the input box
     - Adds a loading bar to the changelog loading window
   Changes:
