@@ -19,9 +19,3 @@ data/model*
 data/logs/*
 config/userconfig.toml
 config/filters.toml
-run.bat
-debug.bat
-update.bat
-!data/run.bat
-!data/debug.bat
-!data/update.bat

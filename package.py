@@ -4,10 +4,14 @@ import os
 from pathlib import Path
 
 class Packageable:
-    def __init__(self, path: str = "", ignore: "list[Packageable]" = [], is_dir: bool = False):
+    def __init__(self, path: str = "", destination: str | None = None, ignore: "list[Packageable]" = [], is_dir: bool = False):
         self._path = path
-        self._ignore = ignore
-        self._is_dir = is_dir
+        if destination is None:
+            self.destination = self._path
+        else:
+            self.destination = destination
+        self.ignore = ignore
+        self.is_dir = is_dir
     
     def path(self):
         return self._path
@@ -15,11 +19,11 @@ class Packageable:
     def __eq__(self, other):
         if not isinstance(other, Packageable):
             return False
-        return self._path == other._path and self._is_dir == other._is_dir and self._ignore == other._ignore
+        return self._path == other._path and self.is_dir == other.is_dir and self.ignore == other.ignore and self.destination == other.destination
 
     @staticmethod
-    def file(path: str):
-        return Packageable(path=path, is_dir=False)
+    def file(path: str, destination: str | None = None):
+        return Packageable(path=path, destination=destination, is_dir=False)
     
     @staticmethod
     def directory(path: str, ignore: "list[Packageable]" = []):
@@ -30,8 +34,8 @@ files_to_package: list[Packageable] = [
     Packageable.file("config/examplefilters.toml"),
     Packageable.file("readme.md"),
     Packageable.file("requirements.txt"),
-    Packageable.file("data/debug.bat"),
-    Packageable.file("data/run.bat"),
+    Packageable.file("debug.bat", destination="data/debug.bat"),
+    Packageable.file("run.bat", destination="data/run.bat"),
     Packageable.file("setup.bat"),
     Packageable.file("data/stt.py"),
     Packageable.file("data/installer.py"),
@@ -56,19 +60,20 @@ def package_files(files: list[Packageable], zip_path: Path):
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         zipf.writestr(zinfo_or_arcname="version.number", data=version)
         for pkg in files:
-            if pkg._is_dir:
+            if pkg.is_dir:
                 base_path = Path(pkg.path()).resolve()
-                ignored = pkg._ignore
+                ignored = pkg.ignore
 
                 for file_path in base_path.rglob("*"):
                     if not is_ignored(file_path, ignored):
                         arcname = file_path.resolve().relative_to(Path.cwd())
                         zipf.write(file_path, arcname)
             else:
-                full_path = Path(pkg.path()).resolve()
-                if full_path.exists():
-                    arcname = full_path.relative_to(Path.cwd())
-                    zipf.write(full_path, arcname)
+                src_path = Path(pkg.path()).resolve()
+                dst_path = Path(pkg.destination).resolve()
+                if src_path.exists():
+                    arcname = dst_path.relative_to(Path.cwd())
+                    zipf.write(filename=src_path, arcname=arcname)
 
 if __name__ == "__main__":
     print("Version?")
