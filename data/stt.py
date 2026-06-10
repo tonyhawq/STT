@@ -958,6 +958,15 @@ def current_version():
         version = file.read(-1).strip()
     return version
 
+def synchronized_with(lock):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with lock:
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
 class Changelog:
     def __init__(self, version: str, name: str, headline: str, critical_updates: list[str] | None, date: str, categories: dict[str, list[str]]):
         self.name = name
@@ -1125,6 +1134,8 @@ def version_greater(v1: str, v2: str) -> bool:
     t2 = tuple(map(int, v2.split(".")))
     return t1 > t2
 
+kblock = threading.RLock()
+
 class VirtualNamedInput:
     def __init__(self, name: str):
         self.name = name
@@ -1132,10 +1143,12 @@ class VirtualNamedInput:
 
     def aliases(self) -> list[Pressable]:
         return flatten_simple_hotkey(self.name)
-    
+
+    @synchronized_with(kblock)    
     def press(self):
         self.is_pressed = True
     
+    @synchronized_with(kblock)
     def release(self):
         self.is_pressed = False
 
@@ -1651,8 +1664,13 @@ def get_editbox_textbuf(hwnd) -> str:
 
 SHOULD_LOOK_FOR_AUTOMATION_HWND = True
 FOUND_NEW_AUTOMATION_HWND = threading.Event()
-AUTOMATION_TEXTEDIT: pywinauto.application.WindowSpecification | None = None
-AUTOMATION_TEXTEDIT_HWND = None
+class AutomationTextEdit:
+    def __init__(self, textedit: pywinauto.application.WindowSpecification, hwnd: int, pid: int):
+        self.textedit = textedit
+        self.hwnd = hwnd
+        self.pid = pid
+        self.top_window_hwnd = pywinauto.Application(backend="uia").connect(process=self.pid).top_window().handle
+AUTOMATION_TEXTEDIT: AutomationTextEdit | None = None
 
 class ProcessNotFoundError(RuntimeError):
     pass
@@ -1663,20 +1681,21 @@ def _get_dreamseeker_pid() -> int:
             return proc.info["pid"]
     raise ProcessNotFoundError("Couldn't find dreamseeker.exe")
 
-def _find_dreamseeker_window() -> pywinauto.WindowSpecification:
-    print("Locating dreamseeker pid...")
-    pid = _get_dreamseeker_pid()
+def _find_dreamseeker_window(pid: int | None = None) -> pywinauto.WindowSpecification:
+    if pid is None:
+        print("Locating dreamseeker pid...")
+        pid = _get_dreamseeker_pid()
     print(f"finding chat entry bar from automation_id {hwnd_automation_id}")
     return pywinauto.Application(backend="uia").connect(process=pid).top_window()
 
 def _get_dreamseeker_editbox_hwnd():
     global AUTOMATION_TEXTEDIT
-    global AUTOMATION_TEXTEDIT_HWND
-    AUTOMATION_TEXTEDIT = _find_dreamseeker_window().child_window(
+    pid = _get_dreamseeker_pid()
+    tedit = _find_dreamseeker_window(pid).child_window(
         auto_id=str(hwnd_automation_id),
         control_type="Edit"
     )
-    AUTOMATION_TEXTEDIT_HWND = AUTOMATION_TEXTEDIT.handle
+    AUTOMATION_TEXTEDIT = AutomationTextEdit(tedit, tedit.handle, pid) # type: ignore
 
 def _fallback_get_dreamseeker_editbox_hwnd():
     print("_fallback_get_dreamseeker_editbox_hwnd called")
@@ -1686,8 +1705,9 @@ def _fallback_get_dreamseeker_editbox_hwnd():
         _global_exception_handler(e)
         pass
 
-def _get_dreamseeker_all_editboxes():
-    pid = _get_dreamseeker_pid()
+def _get_dreamseeker_all_editboxes(pid: int | None = None):
+    if pid is None:
+        pid = _get_dreamseeker_pid()
     return pywinauto.Application(backend="uia").connect(process=pid).top_window().descendants(control_type="Edit")
 
 def set_config_hwnd_automation_id(auto_id: int):
@@ -1751,7 +1771,8 @@ def ask_and_change_automation_id(auto_id: int):
 
 def ask_for_auto_chatbox():
     bar = ShittyLoadingBar("Locating chat box", "Scanning dreamseeker for available edit boxes...", lambda b: ...)
-    edits = _get_dreamseeker_all_editboxes()
+    pid = _get_dreamseeker_pid()
+    edits = _get_dreamseeker_all_editboxes(pid)
     if len(edits) == 1:
         edit_obj = edits[0]
         highlight_autogui_elem(edit_obj)
@@ -1759,10 +1780,8 @@ def ask_for_auto_chatbox():
         if messagebox.askyesno("Autodetected chat box", "Is this the correct chat box?"):
             stop_current_highlight()
             FOUND_NEW_AUTOMATION_HWND.set()
-            global AUTOMATION_TEXTEDIT_HWND
             global AUTOMATION_TEXTEDIT
-            AUTOMATION_TEXTEDIT_HWND = edit_obj.handle
-            AUTOMATION_TEXTEDIT = edit_obj
+            AUTOMATION_TEXTEDIT = AutomationTextEdit(edit_obj, edit_obj.handle, pid)
             ask_and_change_automation_id(edit_obj.automation_id())
             return
         stop_current_highlight()
@@ -1854,9 +1873,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
                     ask_and_change_automation_id(auto_id)
                 FOUND_NEW_AUTOMATION_HWND.set()
                 global AUTOMATION_TEXTEDIT
-                global AUTOMATION_TEXTEDIT_HWND
-                AUTOMATION_TEXTEDIT_HWND = edit_obj.handle
-                AUTOMATION_TEXTEDIT = edit_obj
+                AUTOMATION_TEXTEDIT = AutomationTextEdit(edit_obj, edit_obj.handle, _get_dreamseeker_pid())
                 window_close_hook()
 
             def _select_wrap(edit_obj=edit):
@@ -1942,7 +1959,7 @@ class GUITHREADINFO(ctypes.Structure):
         ("rcCaret", ctypes.wintypes.RECT),
     ]
 
-def attach_and_focus(hwnd):
+def attach_and_focus(hwnd: ctypes.wintypes.HWND):
     current_tid = ctypes.windll.kernel32.GetCurrentThreadId()
     target_tid = ctypes.windll.user32.GetWindowThreadProcessId(
         hwnd,
@@ -1960,36 +1977,52 @@ def attach_and_focus(hwnd):
         False
     )
 
+def anyashex(val) -> str:
+    try:
+        return hex(int(str(val)))
+    except Exception as e:
+        return str(e)
+
 def submit_automation(transcript: str):
+    if AUTOMATION_TEXTEDIT is None:
+        raise RuntimeError("Attempted to call submit_automation while AUTOMATION_TEXTEDIT is None.")
     doublequote = '"'
     singlequote = "'"
     madestr = f"Say \"{transcript.replace(doublequote, singlequote)}\""
     ctypes.windll.user32.SendMessageW(
-        AUTOMATION_TEXTEDIT_HWND,
+        AUTOMATION_TEXTEDIT.hwnd,
         WM_SETTEXT,
         0,
         madestr
     )
-    parent = ctypes.windll.user32.GetParent(AUTOMATION_TEXTEDIT_HWND)
+    parent: ctypes.wintypes.HWND = ctypes.windll.user32.GetParent(AUTOMATION_TEXTEDIT.hwnd)
     info = GUITHREADINFO()
     info.cbSize = ctypes.sizeof(info)
     ctypes.windll.user32.GetGUIThreadInfo(
         0,  # foreground thread
         ctypes.byref(info)
     )
+    hwnd_to_focus = info.hwndFocus
+    if hwnd_to_focus == AUTOMATION_TEXTEDIT.hwnd:
+        print(f"Foreground window was {anyashex(hwnd_to_focus)} which is the chat box. Switching focus to dreamseeker.exe...")
+        hwnd_to_focus = typing.cast(ctypes.wintypes.HWND, AUTOMATION_TEXTEDIT.top_window_hwnd)
+    print(f"Attaching to {anyashex(parent)} : window to refocus is {anyashex(hwnd_to_focus)}")
     attach_and_focus(parent)
-    ctypes.windll.user32.PostMessageW(AUTOMATION_TEXTEDIT_HWND, WM_KEYDOWN, VK_RETURN, 0)
-    ctypes.windll.user32.PostMessageW(AUTOMATION_TEXTEDIT_HWND, WM_KEYUP, VK_RETURN, 0)
-    ctypes.windll.user32.UpdateWindow(parent)
-    ctypes.windll.user32.RedrawWindow(
-        parent,
-        None,
-        None,
-        0x85  # RDW_UPDATENOW | RDW_ALLCHILDREN
-    )
-    while len(get_editbox_textbuf(AUTOMATION_TEXTEDIT_HWND)) > 0:
+    ctypes.windll.user32.PostMessageW(parent, WM_KEYDOWN, VK_RETURN, 0)
+    ctypes.windll.user32.PostMessageW(parent, WM_KEYUP, VK_RETURN, 0)
+    start = time.monotonic_ns()
+    interval = 1 / 30 * 1000 * 1000 * 1000 # 1 frame at 30fps
+    while len(get_editbox_textbuf(AUTOMATION_TEXTEDIT.hwnd)) > 0:
+        if time.monotonic_ns() - start > interval:
+            print(f"Submission couldn't complete within one 30fps frame {transcript}")
+            if ctypes.windll.user32.GetFocus() != parent:
+                print("Submission unfocused parent")
+                attach_and_focus(parent)
+            ctypes.windll.user32.PostMessageW(parent, WM_KEYDOWN, VK_RETURN, 0)
+            ctypes.windll.user32.PostMessageW(parent, WM_KEYUP, VK_RETURN, 0)
+            start = time.monotonic_ns()
         continue
-    attach_and_focus(info.hwndFocus)
+    attach_and_focus(hwnd_to_focus)
 
 class ModifyableVirtualNamedInput(VirtualNamedInput):
     def __init__(self, name: str):
@@ -2006,7 +2039,7 @@ class ModifyableVirtualNamedInput(VirtualNamedInput):
     def release(self):
         super().release()
         self.was_modified = True
-
+    
 # Currently blocked keys. Usually empty.
 BLOCKED_KEYS: dict[Pressable, ModifyableVirtualNamedInput] = {}
 # Default blocked keys. Should not modify. Filled in setup_default_blocked_keys()
@@ -2027,12 +2060,17 @@ def flatten_simple_hotkey(hotkey) -> list[Pressable]:
     return list(added)
 
 def setup_default_blocked_keys(blockable_keys: list[str]):
+    print(f"Setting up default_blocked_keys with {blockable_keys}")
     for key in blockable_keys:
+        print(f"  blocking {key}")
         name = ModifyableVirtualNamedInput(key)
         aliases = flatten_simple_hotkey(key)
         for alias in aliases:
             DEFAULT_BLOCKED_KEYS[alias] = name
-            print(f"Adding {alias} with name {name.name} to blocked binds when in gameplay")
+            print(f"  Adding {alias} with name {name.name} to blocked binds when in gameplay")
+    print(f"Default blocked keys is: ")
+    for key, value in DEFAULT_BLOCKED_KEYS.items():
+        print(f"  {key}: {value}")
 
 def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([])):
     def decorator(func):
@@ -2049,17 +2087,6 @@ def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([
                     _report_exception(e, "No context available for exception.")
         return wrapper
     return decorator
-
-def synchronized_with(lock):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            with lock:
-                return func(*args, **kwargs)
-        return wrapper
-    return decorator
-
-kblock = threading.RLock()
 
 @synchronized_with(kblock)
 def is_pressed(key: str):
@@ -2079,6 +2106,7 @@ def release_key(key: str):
     _perform_keyboard_action(keyboard.send, key, False, True)
 
 def block_problematic_inputs():
+    print("Blocking input...")
     with kblock:
         global BLOCKED_KEYS_MASTERLIST
         BLOCKED_KEYS_MASTERLIST = []
@@ -2091,7 +2119,7 @@ def block_problematic_inputs():
                 pressed = ModifyableVirtualNamedInput(key.name)
                 BLOCKED_KEYS_MASTERLIST.append(pressed)
                 if source.is_keyboard() and is_pressed(key.name):
-                    print(" CCC is_pressed")
+                    print(f" {key.name} is_pressed")
                     pressed.press()
                     # fuck it special case
                     if key.name == "alt":
@@ -2104,6 +2132,7 @@ def block_problematic_inputs():
 
 
 def unblock_problematic_inputs():
+    print("Unblocking input...")
     masterlist = []
     with kblock:
         global BLOCKED_KEYS
@@ -2116,6 +2145,7 @@ def unblock_problematic_inputs():
         for name in masterlist:
             try:
                 if name.was_modified:
+                    print(f"- {name} was modified")
                     if name.is_pressed:
                         press_key(name.name)
                     else:
@@ -2312,8 +2342,10 @@ def on_key(event: keyboard.KeyboardEvent) -> bool:
         allow_through = False
         if event.event_type == "down":
             BLOCKED_KEYS_PRESS_RECORD[bind].press()
+            print(f" BKPR pressing {bind}")
         else:
             BLOCKED_KEYS_PRESS_RECORD[bind].release()
+            print(f" BKPR releasing {bind}")
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_key():
@@ -2336,10 +2368,11 @@ class ObjectWithTextAttributeWhichIsAString:
 
 class FakeASRModel:
     def __init__(self):
-        pass
+        self._transcription_index = 0
 
     def transcribe(self, args: list[str]) -> tuple[ObjectWithTextAttributeWhichIsAString]:
-        return (ObjectWithTextAttributeWhichIsAString("skipped model loading"),)
+        self._transcription_index += 1
+        return (ObjectWithTextAttributeWhichIsAString(f"Skipped model loading msg({self._transcription_index})"),)
 
 def _lazy_get_dreamseeker_hwnd():
     if use_hwnd:
