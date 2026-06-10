@@ -714,6 +714,8 @@ class MouseButton:
         return self.button.__hash__()
     
     def __eq__(self, other) -> bool:
+        if not isinstance(other, MouseButton):
+            return False
         return self.button == other.button
 
     def is_mouse(self):
@@ -733,6 +735,8 @@ class KeyButton:
         return self.scancode
 
     def __eq__(self, other) -> bool:
+        if not isinstance(other, KeyButton):
+            return False
         return self.scancode == other.scancode
     
     def is_mouse(self):
@@ -822,10 +826,29 @@ class Pressable:
                     raise RuntimeError(f"Invalid key/mousebutton \"{value}\" in hotkey \"{hotkey}\"") from notmouse
         return pressables
 
+    @staticmethod
+    def hotkey_equivilent(a: str, b: str):
+        apbl = Pressable.parse_hotkey(a)
+        bpbl = Pressable.parse_hotkey(b)
+        def key(a: Pressable) -> str:
+            if a.is_keyboard():
+                return str(typing.cast(KeyButton, a.control).scancode)
+            else:
+                return str(typing.cast(MouseButton, a.control).button)
+        for sublist in apbl:
+            sublist.sort(key=key)
+        for sublist in bpbl:
+            sublist.sort(key=key)
+        apbl.sort()
+        bpbl.sort()
+        return apbl == bpbl
+
     def __hash__(self) -> int:
         return self.control.__hash__()
     
     def __eq__(self, other) -> bool:
+        if not isinstance(other, Pressable):
+            return False
         return self.control == other.control
 
     def is_mouse(self):
@@ -1152,27 +1175,13 @@ class VirtualNamedInput:
     def release(self):
         self.is_pressed = False
 
-INPUTS_BY_PRESSABLE: dict[Pressable, list[VirtualNamedInput]] = {}
-# Exists to replace keyboard.is_pressed()
-# keyboard.is_pressed() does not update when a synthetic key is passed
-# so would break often
-# Now INPUTS_BY_PRESSABLE and INPUTS_BY_NAME are interlinked
-# You can lookup a VirtualNamedInput (an input with a name and is_pressed state)
-# By name (w, a, shift, alt)
-# When a pressable that is associated with that key is pressed, it looks up what VirtualNamedInputs are actually associated with that key
-# and presses/releases them
-INPUTS_BY_NAME: dict[str, VirtualNamedInput] = {}
 CONTROLS: dict[str, Control] = {}
 CONTROLBUTTONS_BY_KEY: dict[Pressable, ControlButton] = {}
 
 def populate_named_inputs():
     inputs_to_name = list(string.ascii_lowercase)
     inputs_to_name += ["menu", "shift", "alt", "ctrl", "space", "left", "right", "up", "down", "tab"]
-    for name in inputs_to_name:
-        virtual = VirtualNamedInput(name)
-        for alias in virtual.aliases():
-            INPUTS_BY_PRESSABLE.setdefault(alias, []).append(virtual)
-        INPUTS_BY_NAME[name] = virtual
+    
 
 class ConfigError(Exception):
     def __init__(self, *args, **kwargs):
@@ -2048,16 +2057,6 @@ class ModifyableVirtualNamedInput(VirtualNamedInput):
         super().release()
         self.was_modified = True
     
-# Currently blocked keys. Usually empty.
-BLOCKED_KEYS: dict[Pressable, ModifyableVirtualNamedInput] = {}
-# Default blocked keys. Should not modify. Filled in setup_default_blocked_keys()
-DEFAULT_BLOCKED_KEYS: dict[Pressable, ModifyableVirtualNamedInput] = {}
-# a dict of pressable -> MVNI. When a pressable is touched it touches the MVNI. MVNIs are shared between pressables, so keys with aliases (ctrl -> left control, right control)
-# are handled correctly.
-BLOCKED_KEYS_PRESS_RECORD: dict[Pressable, ModifyableVirtualNamedInput] = {}
-# The actual list of MVNIs. Has no duplicates.
-BLOCKED_KEYS_MASTERLIST: list[ModifyableVirtualNamedInput] = []
-
 def flatten_simple_hotkey(hotkey) -> list[Pressable]:
     parsed = Pressable.parse_hotkey(hotkey)
     if len(parsed) != 1:
@@ -2069,16 +2068,13 @@ def flatten_simple_hotkey(hotkey) -> list[Pressable]:
 
 def setup_default_blocked_keys(blockable_keys: list[str]):
     print(f"Setting up default_blocked_keys with {blockable_keys}")
+    seen_keys: set[str] = set()
     for key in blockable_keys:
-        print(f"  blocking {key}")
-        name = ModifyableVirtualNamedInput(key)
-        aliases = flatten_simple_hotkey(key)
-        for alias in aliases:
-            DEFAULT_BLOCKED_KEYS[alias] = name
-            print(f"  Adding {alias} with name {name.name} to blocked binds when in gameplay")
-    print(f"Default blocked keys is: ")
-    for key, value in DEFAULT_BLOCKED_KEYS.items():
-        print(f"  {key}: {value}")
+        for already_seen in seen_keys:
+            if Pressable.hotkey_equivilent(key, already_seen):
+                raise RuntimeError(f"Attempted to add key {key} to blocked keys twice.")
+        seen_keys.add(key)
+        DEFAULT_TO_BLOCK.append(ModifyableVirtualNamedInput(key))
 
 def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([])):
     def decorator(func):
@@ -2097,10 +2093,6 @@ def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([
     return decorator
 
 @synchronized_with(kblock)
-def is_pressed(key: str):
-    return INPUTS_BY_NAME[key].is_pressed
-
-@synchronized_with(kblock)
 def _perform_keyboard_action(action: typing.Callable, *args, **kwargs):
     action(*args, **kwargs)
 
@@ -2116,50 +2108,21 @@ def release_key(key: str):
 def block_problematic_inputs():
     print("Blocking input...")
     with kblock:
-        global BLOCKED_KEYS_MASTERLIST
-        BLOCKED_KEYS_MASTERLIST = []
-        global BLOCKED_KEYS
-        global BLOCKED_KEYS_PRESS_RECORD
-        BLOCKED_KEYS = DEFAULT_BLOCKED_KEYS
-        BLOCKED_KEYS_PRESS_RECORD = {}
-        for source, key in BLOCKED_KEYS.items():
-            try:
-                pressed = ModifyableVirtualNamedInput(key.name)
-                BLOCKED_KEYS_MASTERLIST.append(pressed)
-                if source.is_keyboard() and is_pressed(key.name):
-                    print(f" {key.name} is_pressed")
-                    pressed.press()
-                    # fuck it special case
-                    if key.name == "alt":
-                        release_key("alt")
-                parsed = flatten_simple_hotkey(key.name)
-                for pressable in parsed:
-                    BLOCKED_KEYS_PRESS_RECORD[pressable] = pressed
-            except Exception as e:
-                quit_with_errorbox(f"FATAL: couldn't block the key \"{key.name}\"\nTry removing it from the blocked keys in userconfig.toml\n({e})")
-
+        for mvni in DEFAULT_TO_BLOCK:
+            for alias in mvni.aliases():
+                BLOCKED_PRESSABLES[alias] = mvni
 
 def unblock_problematic_inputs():
     print("Unblocking input...")
-    masterlist = []
     with kblock:
-        global BLOCKED_KEYS
-        global BLOCKED_KEYS_MASTERLIST
-        global BLOCKED_KEYS_PRESS_RECORD
-        BLOCKED_KEYS = {}
-        masterlist = BLOCKED_KEYS_MASTERLIST
-        BLOCKED_KEYS_PRESS_RECORD = {}
-        BLOCKED_KEYS_MASTERLIST = []
-        for name in masterlist:
-            try:
-                if name.was_modified:
-                    print(f"- {name} was modified")
-                    if name.is_pressed:
-                        press_key(name.name)
-                    else:
-                        release_key(name.name)
-            except Exception as e:
-                quit_with_errorbox(f"FATAL: couldn't unblock the key \"{name}\"\nTry removing it from the blocked keys in userconfig.toml\n({e})")
+        for mvni in BLOCKED_PRESSABLES.values():
+            if mvni.was_modified:
+                if mvni.is_pressed:
+                    press_key(mvni.name)
+                else:
+                    release_key(mvni.name)
+            mvni.was_modified = False
+        BLOCKED_PRESSABLES.clear()
                     
 def submit():
     global state
@@ -2300,7 +2263,7 @@ def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool, dummy):
     bind = Pressable(MouseButton(button.name))
     allow_through = True
     with kblock:
-        if bind in BLOCKED_KEYS:
+        if bind in BLOCKED_PRESSABLES:
             allow_through = False
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
@@ -2331,6 +2294,9 @@ def translate_special_scancode(name: str, scancode: int) -> int:
         return scancode
     return specialmapped
 
+DEFAULT_TO_BLOCK: list[ModifyableVirtualNamedInput] = []
+BLOCKED_PRESSABLES: dict[Pressable, ModifyableVirtualNamedInput] = {}
+
 @must_recover()
 @synchronized_with(kblock)
 def on_key(event: keyboard.KeyboardEvent) -> bool:
@@ -2338,29 +2304,21 @@ def on_key(event: keyboard.KeyboardEvent) -> bool:
         bind = Pressable(KeyButton(translate_special_scancode(event.name, event.scan_code)))
     else:
         bind = Pressable(KeyButton(event.scan_code))
-    if bind in INPUTS_BY_PRESSABLE:
-        if event.event_type == "down":
-            for virtual in INPUTS_BY_PRESSABLE[bind]:
-                virtual.press()
-        else:
-            for virtual in INPUTS_BY_PRESSABLE[bind]:
-                virtual.release()
-    allow_through = True
-    if bind in BLOCKED_KEYS:
-        allow_through = False
-        if event.event_type == "down":
-            BLOCKED_KEYS_PRESS_RECORD[bind].press()
-            print(f" BKPR pressing {bind}")
-        else:
-            BLOCKED_KEYS_PRESS_RECORD[bind].release()
-            print(f" BKPR releasing {bind}")
+    down = event.event_type == "down"
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_key():
-            control.press() if event.event_type == "down" else control.release()
+            control.press() if down else control.release()
             if control.should_suppress():
                 return False
-    return allow_through
+    if bind in BLOCKED_PRESSABLES:
+        mvni = BLOCKED_PRESSABLES[bind]
+        if down:
+            mvni.press()
+        else:
+            mvni.release()
+        return False
+    return True
 
 def mouse_listener():
     global _glob_mouse_listener
@@ -2538,10 +2496,10 @@ def _load_model_get_hwnd(loading_text: Box[str]):
         if type(hwnd_bad_reason) is ProcessNotFoundError:
             loading_text.value = "Waiting for dreamseeker.exe..."
             while True:
-                time.sleep(1)
                 try:
                     _get_dreamseeker_pid()
                 except ProcessNotFoundError:
+                    time.sleep(1)
                     continue
                 break
         print("Couldn't locate dreamseeker.exe and associated chat box")
