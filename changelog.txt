@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
 Version: 1.0.0
-Date: 2026-6-8
+Date: 2026-6-9
   Name:
     - Release 1.0
   Headline:
@@ -16,7 +16,7 @@ Date: 2026-6-8
     - Combination hotkeys (ctrl + g, alt + b, etc..) that have "unbound" in them are parsed as an unbinding
   Bugfixes:
     - Fixes Control::is_pressed not correctly reporting if one of the Control's ControlButtons was in CONTROLBUTTONS_BY_KEY.
-    - Fixes a few edge cases surrounding inputs being blocked and never unblocked
+    - Removes input snapshotting during submission as it caused more bugs than it fixed. Introduces a slight regression in smoothness for "chat" and "say" output methods.
     - Fixes some tkinter gui updates not happening on the main thread
     - Assorted locking / threading preemtive bugfixes
 ---------------------------------------------------------------------------------------------------
