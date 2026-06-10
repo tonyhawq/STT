@@ -1842,6 +1842,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
         nonlocal is_window_open
         is_window_open = False
         window.destroy()
+        stop_current_highlight()
         window_close_event.set()
         if not FOUND_NEW_AUTOMATION_HWND.is_set():
             SHOULD_LOOK_FOR_AUTOMATION_HWND = True
