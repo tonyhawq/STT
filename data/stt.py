@@ -2132,6 +2132,7 @@ def submit():
     global TRANSCRIBED
     with STATUS_LOCK:
         transcript = TRANSCRIBED
+    transcript = FILTERS.transform_input(transcript)
     _finalize_process()
     tk_config(label, text=transcript)
     print("--- Submitting transcript")
