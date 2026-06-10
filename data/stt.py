@@ -1669,7 +1669,7 @@ class AutomationTextEdit:
         self.textedit = textedit
         self.hwnd = hwnd
         self.pid = pid
-        self.top_window_hwnd = pywinauto.Application(backend="uia").connect(process=self.pid).top_window().handle
+
 AUTOMATION_TEXTEDIT: AutomationTextEdit | None = None
 
 class ProcessNotFoundError(RuntimeError):
@@ -1983,7 +1983,10 @@ def anyashex(val) -> str:
     except Exception as e:
         return str(e)
 
+LAST_FOCUSED_HWND = None
+
 def submit_automation(transcript: str):
+    global LAST_FOCUSED_HWND
     if AUTOMATION_TEXTEDIT is None:
         raise RuntimeError("Attempted to call submit_automation while AUTOMATION_TEXTEDIT is None.")
     doublequote = '"'
@@ -2005,7 +2008,12 @@ def submit_automation(transcript: str):
     hwnd_to_focus = info.hwndFocus
     if hwnd_to_focus == AUTOMATION_TEXTEDIT.hwnd:
         print(f"Foreground window was {anyashex(hwnd_to_focus)} which is the chat box. Switching focus to dreamseeker.exe...")
-        hwnd_to_focus = typing.cast(ctypes.wintypes.HWND, AUTOMATION_TEXTEDIT.top_window_hwnd)
+        if LAST_FOCUSED_HWND is None:
+            print(f"Can't switch focus because LAST_FOCUSED_HWND was None.")
+        else:
+            hwnd_to_focus = LAST_FOCUSED_HWND
+    else:
+        LAST_FOCUSED_HWND = hwnd_to_focus
     print(f"Attaching to {anyashex(parent)} : window to refocus is {anyashex(hwnd_to_focus)}")
     attach_and_focus(parent)
     ctypes.windll.user32.PostMessageW(parent, WM_KEYDOWN, VK_RETURN, 0)
