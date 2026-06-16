@@ -703,6 +703,7 @@ class Control:
 autosend = False
 use_say = False
 use_hwnd = False
+hwnd_speech_indicator = False
 hwnd_automation_id: int = 0
 allow_version_checking = True
 allow_cpu_asr = True
@@ -1252,6 +1253,7 @@ def load_settings_from_config():
     autosend = config_get_bool(input, "autosend")
     global use_say
     global use_hwnd
+    global hwnd_speech_indicator
     global hwnd_automation_id
     output_method = config_get_string(output, "output_method")
     if output_method == "say":
@@ -1270,6 +1272,7 @@ def load_settings_from_config():
         use_say = False
         use_hwnd = True
         hwnd_automation_id = int(config_get_number(hwnd_settings, "automation_id"))
+        hwnd_speech_indicator = config_get_bool(hwnd_settings, "show_speech_indicator")
     else:
         raise ConfigError(f"Output method should be either \"say\" or \"chat\", was \"{output_method}\"")
     _load_filters_from_config()
@@ -1315,8 +1318,7 @@ def _finalize_process():
             RECORDING_STREAM.close()
         tk_config(label, text="Waiting...")
     try:
-        pass
-        #os.remove("output.wav")
+        os.remove("output.wav")
     except:
         print("Exception while removing output file.")
 
@@ -1356,6 +1358,8 @@ def record():
     if asr_model is None:
         raise RuntimeError("Attempted to call transcribe on a None asr_model.")
     TRANSCRIBED = str(asr_model.transcribe("output.wav"))
+    if hwnd_speech_indicator:
+        hwnd_settext("")
     if CANCEL_PROCESS:
         _finalize_process()
         return
@@ -1377,6 +1381,8 @@ def begin_recording():
     global IS_RADIO
     if state != State.READY:
         return
+    if hwnd_speech_indicator:
+        hwnd_settext("Say \"\"")
     tk_config(label, text="Recording...")
     with STATUS_LOCK:
         IS_RADIO = False
@@ -1767,6 +1773,16 @@ def anyashex(val) -> str:
         return str(e)
 
 LAST_FOCUSED_HWND = None
+
+def hwnd_settext(text: str):
+    if AUTOMATION_TEXTEDIT is None:
+        raise RuntimeError("Attempted to call hwnd_push_settext while AUTOMATION_TEXTEDIT is None.")
+    ctypes.windll.user32.SendMessageW(
+        AUTOMATION_TEXTEDIT.hwnd,
+        WM_SETTEXT,
+        0,
+        text
+    )
 
 def submit_automation(transcript: str):
     global LAST_FOCUSED_HWND
@@ -2208,6 +2224,7 @@ def load_model(finished: threading.Event, should_spin: Box[bool]):
         asr_model = module.ASRModel(model_loading_state)
     model_loading_state.checkpoints.end()
     model_loading_state.checkpoints.print()
+    show_spinner()
     _load_model_get_hwnd()
     finished.set()
 
