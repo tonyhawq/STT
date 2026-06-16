@@ -49,9 +49,16 @@ chat_delay = 0.75
 automation_id = 0
 
 [meta]
-# Debug option. Disables the speech to text function
-# of this speech to text app.
-skip_model_load = false
+# Choose the ASR model you want to use.
+# Options: none, parakeet, granite
+# FASTEST: parakeet
+# MOST ACCURATE: granite
+model = "parakeet"
+# Alternatively, specify your own model by creating a python script.
+# See data/models/parakeetv2 or data/models/granite_speech for implementation.
+# Note that the class name must be ASRModel.
+# Specify it here with the python filename.
+
 # Where is the STT model file located?
 path_to_model = "data/model/"
 # Warns you if the model is loaded to the CPU

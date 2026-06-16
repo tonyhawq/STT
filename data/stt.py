@@ -20,23 +20,24 @@ try:
     import requests
     import psutil
     import uuid
+    import pyloudnorm
     import subprocess
+    import numpy as np
     import functools
     import math
-    import types
     import pynput._util.win32
     import importlib.util
     import pywinauto
     import ctypes.wintypes
     from enum import Enum
-    import traceback
     import re
+    print("Importing dependencies...")
+    import shared
+    from shared import spawn_thread, report_exception
     print("Importing gui...")
     import tkinter as tk
     from tkinter import messagebox
     import tkinter.ttk as ttk
-    print("Importing STT architecture...")
-    from huggingface_hub import hf_hub_download
 except ImportError as e:
     print("An error occurred on startup!")
     print("-" * 30)
@@ -62,142 +63,6 @@ def quit_with_errorbox(message):
     root.destroy()
 
 print("Finished importing libraries.")
-
-T = typing.TypeVar('T')
-U = typing.TypeVar('U')
-V = typing.TypeVar('V')
-
-DATA_PATH = "data/"
-CONFIG_PATH = "config/"
-
-CONFIG_FILENAME = CONFIG_PATH + "userconfig.toml"
-CONFIG_BACKUP_FILENAME = CONFIG_PATH + "exampleconfig.toml"
-FILTERCONFIG_FILENAME = CONFIG_PATH + "filters.toml"
-FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
-
-root = tk.Tk()
-root.config(bg="white")
-root.title("Speech To Text")
-root.attributes("-topmost", True)
-DEFAULT_WINDOW_WIDTH = 300
-DEFAULT_WINDOW_HEIGHT = 100
-root.minsize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
-label_frame = tk.Frame(root, width = DEFAULT_WINDOW_WIDTH, height = DEFAULT_WINDOW_HEIGHT, bg="white")
-label_frame.pack_propagate(False)
-label_frame.pack(padx=0, pady=0)
-label = tk.Label(label_frame, text="Pre-Init", bg="white", justify="center", font=("Arial", 12))
-label.pack(expand=True)
-
-_registered_tk_hooks: dict[str, list[typing.Callable]] = {}
-
-def register_tkhook(name: str, func: typing.Callable):
-    hooks = _registered_tk_hooks.get(name, None)
-    if hooks is not None:
-        hooks.append(func)
-    else:
-        hooks = [func]
-        _registered_tk_hooks[name] = hooks
-        def _internal_tkhook(event):
-            for hook in hooks:
-                hook(event)
-        root.bind(name, _internal_tkhook)
-        
-
-def on_resize(event):
-    if event.widget != root:
-        return
-    # This a tk hook, so it's on the main thread
-    label_frame.config(width=event.width, height=max(100, label_frame.winfo_height()))
-
-def thook_update_label_wrap(event):
-    label.config(wraplength=event.width - 10)
-
-label_frame.bind("<Configure>", thook_update_label_wrap)
-register_tkhook("<Configure>", on_resize)
-
-_skip_model_loading = False
-thread_context = threading.local()
-verbose = False
-
-class MONITORINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", ctypes.wintypes.DWORD),
-        ("rcMonitor", ctypes.wintypes.RECT),
-        ("rcWork", ctypes.wintypes.RECT),
-        ("dwFlags", ctypes.wintypes.DWORD),
-    ]
-
-_warningbox_xvel = 0
-_warningbox_yvel = 0
-
-def showwarning_at(title: str, message: str, x: int | None, y: int | None) -> tuple[int, int]:
-    global _warningbox_xvel
-    global _warningbox_yvel
-    unique_title = f"{title} : {uuid.uuid4()}"
-    @main_thread
-    def show_box():
-        messagebox.showwarning(unique_title, message)
-    spawn_thread(show_box)
-    hwnd = None
-    for _ in range(500):
-        hwnd = ctypes.windll.user32.FindWindowW("#32770", unique_title)
-        if hwnd:
-            break
-        time.sleep(0.01)
-    if hwnd is None:
-        print(f"Couldn't find warning box {unique_title}!")
-        return (0, 0)
-    
-    rect = ctypes.wintypes.RECT()
-    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-
-    if x is None or y is None:
-        _warningbox_xvel = 10
-        _warningbox_yvel = 10
-        return (rect.left, rect.top)
-
-    width = rect.right - rect.left
-    height = rect.bottom - rect.top
-
-    ctypes.windll.user32.MoveWindow(
-        hwnd,
-        x,
-        y,
-        width,
-        height,
-        True,
-    )
-    
-    monitor = ctypes.windll.user32.MonitorFromWindow(
-        hwnd,
-        2  # MONITOR_DEFAULTTONEAREST
-    )
-    info = MONITORINFO()
-    info.cbSize = ctypes.sizeof(info)
-    ctypes.windll.user32.GetMonitorInfoW(
-        monitor,
-        ctypes.byref(info)
-    )
-    left = typing.cast(int, info.rcMonitor.left)
-    top = typing.cast(int, info.rcMonitor.top)
-    right = typing.cast(int, info.rcMonitor.right)
-    bottom = typing.cast(int, info.rcMonitor.bottom)
-
-    x += _warningbox_xvel
-    y += _warningbox_yvel
-    if x + width >= right:
-        x = right - width
-        _warningbox_xvel = -abs(_warningbox_xvel)
-    elif x <= left:
-        x = left
-        _warningbox_xvel = abs(_warningbox_xvel)
-    if y + height >= bottom:
-        y = bottom - height
-        _warningbox_yvel = -abs(_warningbox_yvel)
-    elif y <= top:
-        y = top
-        _warningbox_yvel = abs(_warningbox_yvel)
-    return (x, y)
 
 def main_thread(func):
     @functools.wraps(func)
@@ -232,166 +97,63 @@ def main_thread_async(func):
         root.after(0, afterwrapper)
     return wrapper
 
-def verbose_print(*args, **kwargs):
-    if verbose:
-        print(*args, **kwargs)
+def _main_thread_sync_shared_wrapper(func, *args, **kwargs):
+    @main_thread
+    def worker():
+        return func(*args, **kwargs)
+    return worker()
 
-MBOX_POS: None | tuple[int, int] = None
-LAST_MBOX_TIME = 0
-MBOX_COUNT = 0
-CAN_SHOW_MBOX = True
-max_mbox_count = 20
-max_mbox_reset_time = 1
-
-def _mbox_time_elapsed():
-    return time.time() - LAST_MBOX_TIME
-
-def _set_mbox_time():
-    global LAST_MBOX_TIME
-    LAST_MBOX_TIME = time.time()
-
-def _global_exception_handler(exception: Exception, context: str = "No context available."):
-    try:
-        filename = DATA_PATH + "logs/" + str(time.time()) + ".log"
-        with io.open(DATA_PATH + "current.log", "w") as log:
-            log.write(context)
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        with io.open(filename, "w") as log:
-            log.write(context)
-        message = f"{type(exception).__name__}:\n{exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
-        def show_mbox():
-            global MBOX_POS
-            global CAN_SHOW_MBOX
-            global MBOX_COUNT
-            if not CAN_SHOW_MBOX:
-                return
-            if _mbox_time_elapsed() > max_mbox_reset_time:
-                MBOX_COUNT = 0
-            if _mbox_time_elapsed() > 5:
-                MBOX_POS = None
-            if MBOX_POS is None:
-                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = None, y = None)
-            else:
-                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = MBOX_POS[0], y = MBOX_POS[1])
-            MBOX_COUNT += 1
-            if MBOX_COUNT > max_mbox_count:
-                CAN_SHOW_MBOX = False
-                errorstr = f"FATAL: encountered {MBOX_COUNT} exceptions within {max_mbox_reset_time} second{'' if max_mbox_reset_time == 1 else 's'}, terminating program early."
-                print(errorstr)
-                quit_with_errorbox(errorstr)
-            _set_mbox_time()
-        queue_deferred(show_mbox)
-    except Exception as e:
-        errorstr = f"FATAL: error encountered while processing {type(exception).__name__} ({exception}): {type(e).__name__}: {e}"
-        print(errorstr)
-        quit_with_errorbox(errorstr)
-
-def _report_exception(e: Exception, context: str | None = None):
-    root.after(0, _global_exception_handler, e, exception_to_filtered_traceback(e, context=context))
-
-def _thread_ctx(func: typing.Callable, context: str, *args, **kwargs):
-    try:
-        global thread_context
-        thread_context.value = context
-        verbose_print("calling", func, "with", args)
+def _main_thread_async_shared_wrapper(func, *args, **kwargs):
+    @main_thread_async
+    def worker():
         func(*args, **kwargs)
-    except Exception as e:
-        _report_exception(e, context)
-        
-_to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", "mainloop", "__call__", "callit", "spawn_thread"]
+    worker()
 
-def exception_to_filtered_traceback(e: Exception, context: str | None = None) -> str:
-    filtered = []
-    if not context is None:
-        filtered.append(f"Context for exception {type(e).__name__}: {e}:")
-        filtered.append(context)
-    filtered.append(f"Traceback for exception {type(e).__name__}: {e} (most recent call last):")
-    cause = e
-    indent = -1
-    while not (cause is None):
-        indent = indent + 1
-        filtered.append(filtered_traceback(cause.__traceback__, indent=indent))
-        if not cause.__cause__ is None:
-            cause = cause.__cause__
-            filtered.append(f"The above exception was directly caused by the following:")
-            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call last):")
-        elif not (cause.__context__ is None) and not cause.__suppress_context__:
-            cause = cause.__context__
-            filtered.append(f"During handling of the above exception, another exception occurred:")
-            filtered.append(f"Traceback for exception {type(cause).__name__}: {cause} (most recent call last):")
-        else:
-            cause = None
-    return '\n'.join(filtered)
+shared.begin(quit_func=quit_normal, quit_error_func=quit_with_errorbox, main_thread_sync_func=_main_thread_sync_shared_wrapper, main_thread_async_func=_main_thread_async_shared_wrapper)
 
-_deferred_queue: list[typing.Callable] = []
-_deferred_queue_access = threading.RLock()
-_deferred_queue_begin = threading.Event()
+T = typing.TypeVar('T')
+U = typing.TypeVar('U')
+V = typing.TypeVar('V')
 
-def _deferred_queue_worker():
-    global _deferred_queue
-    while True:
-        _deferred_queue_begin.wait()
-        owned_funcs = []
-        with _deferred_queue_access:
-            _deferred_queue_begin.clear()
-            owned_funcs = _deferred_queue
-            _deferred_queue = []
-        for func in owned_funcs:
-            func()
+root = tk.Tk()
+root.config(bg="white")
+root.title("Speech To Text")
+root.attributes("-topmost", True)
+root.minsize(shared.DEFAULT_WINDOW_WIDTH, shared.DEFAULT_WINDOW_HEIGHT)
+label_frame = tk.Frame(root, width = shared.DEFAULT_WINDOW_WIDTH, height = shared.DEFAULT_WINDOW_HEIGHT, bg="white")
+label_frame.pack_propagate(False)
+label_frame.pack(padx=0, pady=0)
+label = tk.Label(label_frame, text="Pre-Init", bg="white", justify="center", font=("Arial", 12))
+label.pack(expand=True)
 
-def queue_deferred(func: typing.Callable, *args, **kwargs):
-    with _deferred_queue_access:
-        def wrapper():
-            try:
-                func(*args, **kwargs)
-            except Exception as e:
-                _global_exception_handler(e, "Exception encountered in deferred queue.")
-        _deferred_queue.append(wrapper)
-        _deferred_queue_begin.set()
+_registered_tk_hooks: dict[str, list[typing.Callable]] = {}
 
-def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: int|None = None) -> str:
-    stack: traceback.StackSummary
-    if indent is None:
-        indent = 0
-    indent_str = "  " * indent
-    if parent_frame is None:
-        stack = traceback.extract_stack()
+def register_tkhook(name: str, func: typing.Callable):
+    hooks = _registered_tk_hooks.get(name, None)
+    if hooks is not None:
+        hooks.append(func)
     else:
-        stack = traceback.extract_tb(parent_frame)
-    filtered = ""
-    was_filtered = False
-    for frame in stack:
-        if frame.name == "filtered_traceback":
-            continue
-        if frame.name in _to_filter_functions:
-            if was_filtered:
-                filtered += " -> "
-            else:
-                filtered += indent_str
-                filtered += "In "
-            filtered += frame.name
-            was_filtered = True
-        else:
-            if was_filtered:
-                filtered += " ->\n"
-            filtered += f"{indent_str}{frame.name} in file {frame.filename}, line {frame.lineno}\n  {frame.line}\n"
-            was_filtered = False
-    filtered = filtered.removesuffix('\n') + '\n'
-    return filtered
+        hooks = [func]
+        _registered_tk_hooks[name] = hooks
+        def _internal_tkhook(event):
+            for hook in hooks:
+                hook(event)
+        root.bind(name, _internal_tkhook)
+        
 
-def spawn_thread(func: typing.Callable, *args, **kwargs):
-    context = ""
-    try:
-        context = thread_context.value
-    except:
-        pass
-    stack = context + filtered_traceback()
-    def wrapped_thread_ctx():
-        _thread_ctx(func, stack, *args, **kwargs)
-    thread = threading.Thread(target=wrapped_thread_ctx, daemon=True)
-    thread.start()
-    
-spawn_thread(_deferred_queue_worker)
+def on_resize(event):
+    if event.widget != root:
+        return
+    # This a tk hook, so it's on the main thread
+    label_frame.config(width=event.width, height=max(100, label_frame.winfo_height()))
+
+def thook_update_label_wrap(event):
+    label.config(wraplength=event.width - 10)
+
+label_frame.bind("<Configure>", thook_update_label_wrap)
+register_tkhook("<Configure>", on_resize)
+
+CHOSEN_MODEL = None
 
 @main_thread
 def on_force_geometry_change():
@@ -690,7 +452,6 @@ class FilterManager:
 
 audio = pyaudio.PyAudio()
 
-path_to_model = ""
 asr_model = None
 
 class Box(typing.Generic[T]):
@@ -699,7 +460,7 @@ class Box(typing.Generic[T]):
 
     def has_value(self):
         return self.value is not None
-
+    
 class MouseButton:
     def __init__(self, button: str):
         self.button = button
@@ -1380,8 +1141,8 @@ def load_configdict_from_filename(filename: str, backup: str) -> dict:
     return config
 
 def _load_filters_from_config():
-    print(f"Loading filters from config file {FILTERCONFIG_FILENAME}")
-    config = load_configdict_from_filename(FILTERCONFIG_FILENAME, FILTERCONFIG_BACKUP_FILENAME)
+    print(f"Loading filters from config file {shared.FILTERCONFIG_FILENAME}")
+    config = load_configdict_from_filename(shared.FILTERCONFIG_FILENAME, shared.FILTERCONFIG_BACKUP_FILENAME)
     for name, filter in config.items():
         if type(filter) is not dict:
             raise ConfigTypeError(f"Section {name} isn't a dictionary. Did you mean to write\n[{name}] ?")
@@ -1446,9 +1207,11 @@ def _load_filters_from_config():
                background=color,
                text_color=text_color)
 
+path_to_model = "UNKNOWN_MODEL_PATH"
+
 def load_settings_from_config():
-    print(f"Loading from config file {CONFIG_FILENAME}")
-    config = load_configdict_from_filename(CONFIG_FILENAME, CONFIG_BACKUP_FILENAME)
+    print(f"Loading from config file {shared.CONFIG_FILENAME}")
+    config = load_configdict_from_filename(shared.CONFIG_FILENAME, shared.CONFIG_BACKUP_FILENAME)
     print(config)
     output = config_get_dict(config, "output")
     say_settings = config_get_dict(output, "say_settings")
@@ -1470,16 +1233,16 @@ def load_settings_from_config():
         if type(key) is not str:
             raise ConfigTypeError(f"Expected blocked_keys to be a list of strings, got {type(key).__name__}")
     setup_default_blocked_keys(default_blocked_keys)
-    global DEFAULT_WINDOW_WIDTH
-    global DEFAULT_WINDOW_HEIGHT
-    global _skip_model_loading
-    _skip_model_loading = config_get_bool(meta, "skip_model_load") if config_has_key(meta, "skip_model_load") else False
-    DEFAULT_WINDOW_WIDTH = int(config_get_number(meta, "window_width"))
-    DEFAULT_WINDOW_HEIGHT = int(config_get_number(meta, "window_height"))
+    global CHOSEN_MODEL
+    CHOSEN_MODEL = config_get_string(meta, "model").strip().lower()
+    if CHOSEN_MODEL != "none" and CHOSEN_MODEL != "parakeet" and CHOSEN_MODEL != "granite" and not CHOSEN_MODEL.endswith(".py"):
+        raise ConfigError(f"Expected \"model\" in \"meta\" to be either none, parakeet, granite, or a python file, instead it was \"{CHOSEN_MODEL}\"")
+    shared.DEFAULT_WINDOW_WIDTH = int(config_get_number(meta, "window_width"))
+    shared.DEFAULT_WINDOW_HEIGHT = int(config_get_number(meta, "window_height"))
     @main_thread
     def resize_label_frame():
-        label_frame.config(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
-        root.minsize(width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
+        label_frame.config(width=shared.DEFAULT_WINDOW_WIDTH, height=shared.DEFAULT_WINDOW_HEIGHT)
+        root.minsize(width=shared.DEFAULT_WINDOW_WIDTH, height=shared.DEFAULT_WINDOW_HEIGHT)
         on_force_geometry_change()
     resize_label_frame()
 
@@ -1536,7 +1299,7 @@ def is_pressing_radio() -> bool:
     return control.is_pressed()
 
 def _finalize_process():
-    verbose_print("Finalizing.")
+    shared.verbose_print("Finalizing.")
     global state
     with STATUS_LOCK:
         tk_config(label_background, bg="white")
@@ -1552,7 +1315,8 @@ def _finalize_process():
             RECORDING_STREAM.close()
         tk_config(label, text="Waiting...")
     try:
-        os.remove("output.wav")
+        pass
+        #os.remove("output.wav")
     except:
         print("Exception while removing output file.")
 
@@ -1572,17 +1336,26 @@ def record():
         RECORDING_STREAM.stop_stream() # type: ignore
         RECORDING_STREAM.close() # type: ignore
         RECORDING_STREAM = None
+        samples = np.frombuffer(b''.join(RECORDING_FRAMES), dtype=np.int16).astype(np.float32) / 32768.0
+        meter = pyloudnorm.Meter(16000)  # your sample rate
+        loudness = meter.integrated_loudness(samples)
+        target_lufs = -18.0
+        samples = pyloudnorm.normalize.loudness(samples, loudness, target_lufs)
+        samples = np.clip(samples, -1.0, 1.0)
+        samples_int16 = (samples * 32767).astype(np.int16)
         file = wave.open("output.wav", "wb")
         file.setnchannels(1)
         file.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
         file.setframerate(16000)
-        file.writeframes(b''.join(RECORDING_FRAMES))
+        file.writeframes(samples_int16.tobytes())
         file.close()
         STOP_RECORDING = False
         state = State.PROCESSING
     global TRANSCRIBED
     tk_config(label, text="Transcribing...")
-    TRANSCRIBED = str(asr_model.transcribe(["output.wav"])[0].text) # type: ignore
+    if asr_model is None:
+        raise RuntimeError("Attempted to call transcribe on a None asr_model.")
+    TRANSCRIBED = str(asr_model.transcribe("output.wav"))
     if CANCEL_PROCESS:
         _finalize_process()
         return
@@ -1711,7 +1484,7 @@ def _fallback_get_dreamseeker_editbox_hwnd():
     try:
         _fallback_get_dreamseeker_editbox_hwnd_raw_impl()
     except Exception as e:
-        _global_exception_handler(e)
+        report_exception(e)
         pass
 
 def _get_dreamseeker_all_editboxes(pid: int | None = None):
@@ -1721,15 +1494,15 @@ def _get_dreamseeker_all_editboxes(pid: int | None = None):
 
 def set_config_hwnd_automation_id(auto_id: int):
     try:
-        with open(CONFIG_FILENAME, "r", encoding="utf-8") as f:
+        with open(shared.CONFIG_FILENAME, "r", encoding="utf-8") as f:
             config = tomlkit.parse(f.read())
 
         config["output"]["hwnd_settings"]["automation_id"] = int(auto_id)
 
-        with open(CONFIG_FILENAME, "w", encoding="utf-8") as f:
+        with open(shared.CONFIG_FILENAME, "w", encoding="utf-8") as f:
             f.write(tomlkit.dumps(config))
     except Exception as e:
-        _global_exception_handler(e, "setting config file")
+        report_exception(e, "setting config file")
 
 CURRENT_HIGHLIGHT: tk.Toplevel | None = None
 RUN_HIGHLIGHTS = True
@@ -2077,22 +1850,6 @@ def setup_default_blocked_keys(blockable_keys: list[str]):
         seen_keys.add(key)
         DEFAULT_TO_BLOCK.append(ModifyableVirtualNamedInput(key))
 
-def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([])):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except allowed_exceptions:
-                raise
-            except Exception as e:
-                try:
-                    _report_exception(e, context=thread_context.value)
-                except:
-                    _report_exception(e, "No context available for exception.")
-        return wrapper
-    return decorator
-
 @synchronized_with(kblock)
 def _perform_keyboard_action(action: typing.Callable, *args, **kwargs):
     action(*args, **kwargs)
@@ -2246,9 +2003,9 @@ def on_radio_press_handler():
         return
     was_radio_pressed = True
     with STATUS_LOCK:
-        verbose_print("radio press")
+        shared.verbose_print("radio press")
         if state == State.READY:
-            verbose_print("Could not change IS_RADIO state")
+            shared.verbose_print("Could not change IS_RADIO state")
             return
         global IS_RADIO
         IS_RADIO = not IS_RADIO
@@ -2260,7 +2017,7 @@ def on_radio_release_handler():
 
 _glob_mouse_listener: pynput.mouse.Listener = None # type: ignore
 
-@must_recover((pynput._util.win32.SystemHook.SuppressException,))
+@shared.must_recover((pynput._util.win32.SystemHook.SuppressException,))
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool, dummy):
     bind = Pressable(MouseButton(button.name))
     allow_through = True
@@ -2299,7 +2056,7 @@ def translate_special_scancode(name: str, scancode: int) -> int:
 DEFAULT_TO_BLOCK: list[ModifyableVirtualNamedInput] = []
 BLOCKED_PRESSABLES: dict[Pressable, ModifyableVirtualNamedInput] = {}
 
-@must_recover()
+@shared.must_recover()
 @synchronized_with(kblock)
 def on_key(event: keyboard.KeyboardEvent) -> bool:
     if event.name is not None:
@@ -2329,28 +2086,10 @@ def mouse_listener():
 
 def keyboard_listener():
     keyboard.hook(on_key, suppress=True)
-    
-class ObjectWithTextAttributeWhichIsAString:
-    def __init__(self, val: str):
-        self.text = val
-
-class FakeASRModel:
-    def __init__(self):
-        self._transcription_index = 0
-
-    def transcribe(self, args: list[str]) -> tuple[ObjectWithTextAttributeWhichIsAString]:
-        self._transcription_index += 1
-        return (ObjectWithTextAttributeWhichIsAString(f"Skipped model loading msg({self._transcription_index})"),)
 
 def _lazy_get_dreamseeker_hwnd():
     if use_hwnd:
         _get_dreamseeker_editbox_hwnd()
-
-def skip_model_load(loading_text: Box[str], final: Box[bool]):
-    _load_model_get_hwnd(loading_text)
-    global asr_model
-    asr_model = FakeASRModel()
-    final.value = True
 
 EARLY_GIVEUP_INIT = False
 
@@ -2481,12 +2220,23 @@ def _download_pytorch_cuda():
         write_log(f"PyTorch install URL:")
         write_log(f"  {suggested_cuda_URL()}")
 
-def _load_model_get_hwnd(loading_text: Box[str]):
-    loading_text.value = "Locating dreamseeker.exe"
+_curr_model_loadingtext = ""
+_model_loadingtext_changed = threading.Event()
+
+def _get_model_loadingtext() -> str:
+    return _curr_model_loadingtext
+
+def _set_model_loadingtext(text: str):
+    global _curr_model_loadingtext
+    _curr_model_loadingtext = text
+    _model_loadingtext_changed.set()
+
+def _load_model_get_hwnd():
+    _set_model_loadingtext("Locating dreamseeker.exe")
     hwnd_ok = True
     hwnd_bad_reason: pywinauto.ElementNotFoundError | ProcessNotFoundError | None = None 
     try:
-        print("lazy locaing dreamseeker.exe")
+        print("lazy locating dreamseeker.exe")
         _lazy_get_dreamseeker_hwnd()
     except pywinauto.ElementNotFoundError as e:
         hwnd_ok = False
@@ -2496,7 +2246,7 @@ def _load_model_get_hwnd(loading_text: Box[str]):
         hwnd_bad_reason = e
     if not hwnd_ok:
         if type(hwnd_bad_reason) is ProcessNotFoundError:
-            loading_text.value = "Waiting for dreamseeker.exe..."
+            _set_model_loadingtext("Waiting for dreamseeker.exe...")
             while True:
                 try:
                     _get_dreamseeker_pid()
@@ -2523,125 +2273,72 @@ def _load_model_get_hwnd(loading_text: Box[str]):
                 fallback_tried = True
             if SHOULD_LOOK_FOR_AUTOMATION_HWND:
                 try:
-                    loading_text.value += " (locating)"
+                    _set_model_loadingtext(_get_model_loadingtext() + " (locating)")
                     _lazy_get_dreamseeker_hwnd()
                     break
                 except pywinauto.ElementNotFoundError as e:
-                    loading_text.value = "Looking for the chat box..."
+                    _set_model_loadingtext("Looking for the chat box...")
                     time.sleep(1)
                 except ProcessNotFoundError as e:
-                    loading_text.value = "Waiting for SS13 to be launched..."
+                    _set_model_loadingtext("Waiting for SS13 to be launched...")
                     time.sleep(1)
             else:
-                loading_text.value = "Waiting for new chat box to be selected..."
+                _set_model_loadingtext("Waiting for new chat box to be selected...")
                 FOUND_NEW_AUTOMATION_HWND.wait()
                 if not SHOULD_LOOK_FOR_AUTOMATION_HWND:
                     break
-                loading_text.value = "Using default chat box..."
+                _set_model_loadingtext("Using default chat box...")
 
-def load_model(final: Box[bool], can_spin: Box, loading_text: Box[str]):
-    if _skip_model_loading:
-        can_spin.value = True
-        return skip_model_load(loading_text, final)
-    model_filename = "parakeet-tdt-0.6b-v2.nemo"
-    model_path = path_to_model + model_filename
-    if not os.path.exists(model_path):
-        tk_config(label, text=f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?")
-        @main_thread_async
-        def _resize_window_first():
-            if root.winfo_width() < 500:
-                root.minsize(500, root.winfo_height())
-        _resize_window_first()
-        allowed = False
-        def on_allow():
-            nonlocal allowed
-            allowed = True
-        def on_deny():
-            quit_normal()
-        allow = None
-        deny = None
-        @main_thread
-        def create_buttons():
-            nonlocal allow
-            nonlocal deny
-            allow = tk.Button(root, text="Allow", command=on_allow)
-            deny = tk.Button(root, text="Deny", command=on_deny)
-            allow.pack(padx=10, pady=10, side=tk.LEFT)
-            deny.pack(padx=10, pady=10, side=tk.LEFT)
-            on_force_geometry_change()
-        create_buttons()
-        while not allowed:
-            time.sleep(0.5)
-        @main_thread
-        def destroy_buttons():
-            if allow is not None:
-                allow.destroy()
-            if deny is not None:
-                deny.destroy()
-            on_force_geometry_change()
-        destroy_buttons()
-        can_spin.value = True
-        loading_text.value = "Downloading parakeet-tdt-0.6b-v2.nemo..."
-        hf_hub_download(
-            repo_id="nvidia/parakeet-tdt-0.6b-v2",
-            filename="parakeet-tdt-0.6b-v2.nemo",
-            local_dir=path_to_model,
-            local_dir_use_symlinks=False
-            )
-        @main_thread
-        def _fix_window_size():
-            root.minsize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
-        _fix_window_size()
-    can_spin.value = True
-
-    print("Initializing pytorch...")
-    loading_text.value = "Initializing pytorch..."
-    import torch
-    import torch.version
-    print("Initialized.")
-    print("torch version:", torch.__version__)
-    print("cuda available:", torch.cuda.is_available())
-    print("cuda version:", torch.version.cuda)
-    if not torch.cuda.is_available() and not allow_cpu_asr:
-        loading_text.value = "Waiting for user input..."
-        why_no_cuda = "Something went wrong."
-        try:
-            torch.cuda.current_device()
-        except Exception as e:
-            print(type(e).__name__)
-            print(e)
-            why_no_cuda = f"{e}"
-        @main_thread
-        def download_pytorch() -> bool | None:
-            return messagebox.askyesnocancel("STT Loaded to CPU", f"PyTorch was loaded to your CPU because CUDA wasn't available: {why_no_cuda}\nThis will lead to degraded performance.\nPress YES to download pytorch for GPU, press NO to ignore, and press CANCEL to close STT.\nDisable this warning in the config by changing warn_on_cpu to false.")
-        choice = download_pytorch()
-        if choice is None:
-            quit_normal()
-        if choice:
-            global EARLY_GIVEUP_INIT
-            EARLY_GIVEUP_INIT = True
-            final.value = True
-            spawn_thread(_download_pytorch_cuda)
-            return
-    print("Initalizing nemo...")
-    loading_text.value = "Initalizing nemo..."
-    import nemo.collections.asr as nemo_asr
-    print("Initialized.")
-
+def load_model(finished: threading.Event, should_spin: Box[bool]):
     global asr_model
-    loading_text.value = "Loading " + model_filename + "..."
-    asr_model = nemo_asr.models.ASRModel.restore_from(model_path) # type: ignore
-    device = next(asr_model.parameters()).device # type: ignore
-    print(f"Model device: {device}")
-    if device.type == "cpu" and not allow_cpu_asr:
-        @main_thread_async
-        def confirm_cpu():
-            messagebox.showwarning("STT Loaded to CPU", "The speech-to-text model was loaded to your CPU.\nDisable this warning in the config by changing warn_on_cpu to false.")
-        confirm_cpu()
-    _load_model_get_hwnd(loading_text)
-    final.value = True
+    def cancel_init():
+        global EARLY_GIVEUP_INIT
+        EARLY_GIVEUP_INIT = True
+        finished.set()
+    def show_spinner():
+        should_spin.value = True
+        _model_loadingtext_changed.set()
+    def hide_spinner():
+        should_spin.value = False
+        _model_loadingtext_changed.set()
+    model_loading_state = shared.ModelLoadingState(
+        window=root,
+        settext=_set_model_loadingtext,
+        quit=quit,
+        cancel_init=cancel_init,
+        show_spinner=show_spinner,
+        hide_spinner=hide_spinner,
+        model_dir=path_to_model,
+        allow_cpu=allow_cpu_asr
+        )
+    if CHOSEN_MODEL is None:
+        raise RuntimeError("CHOSEN_MODEL was None, expected string.")
+    if CHOSEN_MODEL == "none":
+        from models.fake_asr_model import FakeASRModel
+        asr_model = FakeASRModel(model_loading_state)
+    elif CHOSEN_MODEL == "parakeet":
+        from models.parakeetv2 import ParakeetV2
+        asr_model = ParakeetV2(model_loading_state)
+    elif CHOSEN_MODEL == "granite":
+        from models.granite_speech import GraniteSpeech4p1x2B
+        asr_model = GraniteSpeech4p1x2B(model_loading_state)
+    else:
+        spec = importlib.util.spec_from_file_location(CHOSEN_MODEL)
+        if spec is None:
+            raise ImportError(f"Could not load spec for {CHOSEN_MODEL}")
+        if spec.loader is None:
+            raise ImportError(f"Could not find loader for {CHOSEN_MODEL} {spec}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not hasattr(module, "ASRModel"):
+            raise ImportError(f"While loading a user-defined ASR model, couldn't find the class \"ASRModel\". Did you name your class something else? Ensure that your model is named \"ASRModel\" exactly. ({CHOSEN_MODEL} does not have an ASRModel class.)")
+        asr_model = module.ASRModel(model_loading_state)
+    model_loading_state.checkpoints.end()
+    model_loading_state.checkpoints.print()
+    _load_model_get_hwnd()
+    finished.set()
 
-def advance_wheel(wheel: str) -> str:
+def advance_wheel(wheel: str) -> typing.Literal["-", "\\", "|", "/"]:
     if wheel == "-":
         return "\\"
     if wheel == "\\":
@@ -2687,14 +2384,15 @@ class FilterActivationCallback:
                 self.filter.manager.disable_filter(self.filter.name, "keypress")
 
 def init():
+    startup_time = shared.Timer()
     ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6) # hide console
     wheel = "-"
-    loading_finished = Box(False)
+    loading_finished = threading.Event()
     can_spin = Box(False)
-    loading_text = Box("Goaning stations...")
-    tk_config(label, text=loading_text.value)
+    tk_config(label, text="Goaning stations...")
     populate_named_inputs()
     load_settings_from_config()
+    print(f"settings took {startup_time.resetmstrnc()}s")
     free_ram = psutil.virtual_memory().available
     required_ram = 5 * 1024**3 # 5GB
     print(f"Current free ram is {free_ram}B or {free_ram / 1000 / 1000 / 1000}GB")
@@ -2713,13 +2411,42 @@ def init():
                 spawn_thread(show_version_info, text, changelog, current)
         except Exception as e:
             spawn_thread(messagebox.showerror, "An error has occurred", f"Encountered {type(e).__name__} {e} while checking version.")
-    spawn_thread(load_model, loading_finished, can_spin, loading_text)
-    while not loading_finished.value:
-        while can_spin.value and not loading_finished.value:
-            wheel = advance_wheel(wheel)
-            tk_config(label, text=loading_text.value + " " + wheel)
+    print(f"version checking took {startup_time.resetmstrnc()}s")
+    spawn_thread(load_model, loading_finished, can_spin)
+    data_arrived = threading.Event()
+    def finished_checker():
+        loading_finished.wait()
+        data_arrived.set()
+    spawn_thread(finished_checker)
+    def settext_checker():
+        while True:
+            _model_loadingtext_changed.wait()
+            if loading_finished.is_set():
+                return
+            data_arrived.set()
+            _model_loadingtext_changed.clear()
+    spawn_thread(settext_checker)
+    timeout_event = threading.Event()
+    def timeout_checker():
+        while True:
             time.sleep(0.5)
-        time.sleep(0.5)
+            if loading_finished.is_set():
+                return
+            timeout_event.set()
+            data_arrived.set()
+    spawn_thread(timeout_checker)
+    while True:
+        data_arrived.wait()
+        data_arrived.clear()
+        if loading_finished.is_set():
+            break
+        if timeout_event.is_set():
+            timeout_event.clear()
+            wheel = advance_wheel(wheel)
+        if can_spin.value:
+            tk_config(label, text=f"{_curr_model_loadingtext} {wheel}")
+        else:
+            tk_config(label, text=_curr_model_loadingtext)
     if EARLY_GIVEUP_INIT:
         return
     for registered_filter in FILTERS.registered_filters.values():
