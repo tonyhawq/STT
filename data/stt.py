@@ -2130,7 +2130,8 @@ def submit():
             radio = IS_RADIO
             if radio:
                 label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
-                transcript = "; " + transcript
+                if not (transcript.startswith(";") or transcript.startswith(":")):
+                    transcript = "; " + transcript
             if use_say:
                 submit_say(transcript)
             elif use_hwnd:
