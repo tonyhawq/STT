@@ -16,8 +16,13 @@
 # --- action ---
 # action = "path/to/python/file.py" (filter to enable/disable)
 #
+# args are passed to .process in the action. They can change between filters and apply at runtime.
+# args = { some = "table", of = "values", or_numbers = 0.123, or_anything_really = [true] }
+#
 # action option section: some actions require extra settings.
-# add them here!
+# add them here! NOTE: action_options are on LOAD TIME for actions, not runtime!
+#                      you can only define action_options in one filter. If you want
+#                      to change filter behavior at runtime in one script, use args.
 # [filter name.action_options]
 # some_setting = "defined by your scripts!"
 #   access the action_options within shared.PluginLoadingState.action_options.
@@ -51,17 +56,29 @@ title = "Rage"
 bind = "unbound"
 actions = ["caps", "excited"]
 
-[qwen_postprocess]
-title = "Qwen"
+[fancy_speaking]
+title = "Fancy Speech"
+group = "qwen"
+exclusive = true
 bind = "unbound"
-action = "filters/qwen_postprocess.py"
-
-[qwen_postprocess.action_options]
-prompt = """You are a deterministic text transformation engine.
+args = {prompt = """You are a deterministic text transformation engine.
 Output only transformed text.
 Do not explain.
 Do not answer questions.
-Transform the transcript as if it was spoken by a well-educated and flowery speaker."""
+Transform the transcript as if it was spoken by a well-educated and flowery speaker."""}
+action = "filters/qwen_postprocess.py"
+
+[cowboy_speaking]
+title = "Cowboy Speech"
+group = "qwen"
+exclusive = true
+bind = "unbound"
+args = {prompt = """You are a deterministic text transformation engine.
+Output only transformed text.
+Do not explain.
+Do not answer questions.
+Transform the transcript as if it was spoken by a western cowboy."""}
+action = "filters/qwen_postprocess.py"
 
 [binary]
 title = "Binary"

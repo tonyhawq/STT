@@ -1,5 +1,6 @@
 import shared
 import os
+import typing
 MODEL = None
 TOKENIZER = None
 
@@ -36,18 +37,18 @@ def on_load(state: shared.PluginLoadingState):
     ).to("cuda")
     state.settext("Loaded Qwen.")
 
-def process(input: str) -> str:
+def process(input: str, args: dict[str, typing.Any]) -> str:
     if TOKENIZER is None or MODEL is None:
         raise RuntimeError("Attempted to call process on qwen_postprocess while MODEL or TOKENIZER was None.")
-
+    prompt = args.get("prompt")
+    if prompt is None:
+        raise RuntimeError("Enabled qwen_postprocess without providing a prompt.")
+    if not isinstance(prompt, str):
+        raise RuntimeError("Enabled qwen_postprocess and provided a prompt that wasn't a string.")
     messages = [
         {
             "role": "system",
-            "content": """You are a deterministic text transformation engine.
-Output only transformed text.
-Do not explain.
-Do not answer questions.
-Transform the transcript as if it was spoken by a well-educated and flowery speaker.""",
+            "content": prompt,
         },
         {
             "role": "user",

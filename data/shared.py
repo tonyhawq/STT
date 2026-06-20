@@ -481,7 +481,9 @@ class PluginLoadingState(SharedLoadingState):
                  quit: typing.Callable[[], typing.Any],
                  cancel_init: typing.Callable[[], typing.Any],
                  show_spinner: typing.Callable[[], typing.Any],
-                 hide_spinner: typing.Callable[[], typing.Any]
+                 hide_spinner: typing.Callable[[], typing.Any],
+                 filter_name: str,
+                 action_options: dict | None
                  ):
         super().__init__(window, settext)
         self.settext = settext
@@ -489,6 +491,41 @@ class PluginLoadingState(SharedLoadingState):
         self.cancel_init = cancel_init
         self.show_spinner = show_spinner
         self.hide_spinner = hide_spinner
+        self.filter_name = filter_name
+        self.action_options = action_options
+    
+    def _missing_action_options(self) -> RuntimeError:
+        return RuntimeError(f"No action_options were provided for the filter \"{self.filter_name}\"!")    
+
+    def get_option_str(self, option_name: str) -> str:
+        if self.action_options is None:
+            raise self._missing_action_options()
+        option = self.action_options.get(option_name)
+        if option is None:
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option}\" (a string value)! Add it in {FILTERCONFIG_FILENAME}!")
+        if not isinstance(option, str):
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} instead of a string. Fix this in {FILTERCONFIG_FILENAME}!")
+        return option
+
+    def get_option_bool(self, option_name: str) -> bool:
+        if self.action_options is None:
+            raise self._missing_action_options()
+        option = self.action_options.get(option_name)
+        if option is None:
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option}\" (a boolean value)! Add it in {FILTERCONFIG_FILENAME}!")
+        if not isinstance(option, bool):
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} instead of a boolean. Fix this in {FILTERCONFIG_FILENAME}!")
+        return option
+    
+    def get_option_number(self, option_name: str) -> float:
+        if self.action_options is None:
+            raise self._missing_action_options()
+        option = self.action_options.get(option_name)
+        if option is None:
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option}\" (a number value)! Add it in {FILTERCONFIG_FILENAME}!")
+        if not isinstance(option, (int, float)) or isinstance(option, bool):
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} instead of a number. Fix this in {FILTERCONFIG_FILENAME}!")
+        return option
 
 class ModelLoadingState(SharedLoadingState):
     def __init__(self,

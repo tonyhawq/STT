@@ -29,6 +29,7 @@ try:
     import importlib.util
     import pywinauto
     import ctypes.wintypes
+    import inspect
     from enum import Enum
     import re
     print("Importing dependencies...")
@@ -205,7 +206,7 @@ class ApplyableAction:
         self.action: typing.Callable[[str], str] = ApplyableAction.DefaultAction
 
     @staticmethod
-    def DefaultAction(input):
+    def DefaultAction(input: str) -> str:
         raise RuntimeError(f"Attempted to call an ApplyableAction which does not have an action bound.\nGiven input string was: \"{input}\"")
 
     def __repr__(self):
@@ -224,23 +225,51 @@ class ApplyableAction:
             raise RuntimeError(f"An error occurred while transforming {input} in {self.name}: {str(e)}") from e
 
 class TransformAction(ApplyableAction):
-    def __init__(self, manager: "FilterManager", script_filename):
+    def __init__(self, manager: "FilterManager", script_filename: str, enabling_args: dict[str, typing.Any]):
         super().__init__(os.path.splitext(os.path.basename(script_filename))[0] + "." + str(uuid.uuid4()), manager)
+        self.src = str(Path(script_filename).resolve())
+        self.args = enabling_args
         spec = importlib.util.spec_from_file_location(os.path.splitext(os.path.basename(script_filename))[0], script_filename)
         if spec is None:
             raise ImportError(f"Could not load spec for {script_filename}")
         if spec.loader is None:
             raise ImportError(f"Could not find loader for {script_filename} {spec}")
         module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         if not hasattr(module, "process"):
             raise ImportError(f"Plugin {script_filename} does not have a process() function.")
-        self.action = module.process
+        supports_args = "args" in inspect.signature(module.process).parameters
+        if supports_args:
+            def wrapped_process(input: str) -> str:
+                return module.process(input, self.args)
+            self.action = wrapped_process
+        else:
+            self.action = module.process
+        def _set_loading_complete():
+            setattr(module, "MANAGER__is_loading_complete", True)
+        def _get_loading_complete() -> bool:
+            if not hasattr(module, "MANAGER__is_loading_complete"):
+                return False
+            return True if module.MANAGER__is_loading_complete else False
+        self._set_loading_complete = _set_loading_complete
+        self.is_loading_complete = _get_loading_complete
         if not hasattr(module, "on_load"):
-            print(f"Plugin {script_filename} does not have a on_load function.")
+            print(f" Plugin {script_filename} does not have an on_load function.")
         else:
             self.defined_on_load = module.on_load
-    
+        
+    def run_defined_loader(self, state: shared.PluginLoadingState):
+        if self.is_loading_complete():
+            raise RuntimeError("Attempted to call run_defined_loader on a module that was already loaded.")
+        try:
+            if hasattr(self, "defined_on_load"):
+                self.defined_on_load(state)
+        except:
+            raise
+        finally:
+            self._set_loading_complete()
+
     def __repr__(self):
         return "TransformAction." + self.name
 
@@ -475,14 +504,14 @@ class FilterManager:
 
     def _impl_enable_action(self, action: ApplyableAction):
         self.enabled_actions[action.name] = action
-        if action is ApplyableAction.DefaultAction:
+        if action.action is ApplyableAction.DefaultAction:
             return
         if action not in self.actionlist:
             self.actionlist.append(action)
     
     def _impl_disable_action(self, action: ApplyableAction):
         self.enabled_actions.pop(action.name, None)
-        if action is ApplyableAction.DefaultAction:
+        if action.action is ApplyableAction.DefaultAction:
             return
         if action in self.actionlist:
             self.actionlist.remove(action)
@@ -1223,9 +1252,11 @@ def load_configdict_from_filename(filename: str, backup: str) -> dict:
             config = tomllib.load(config_file)
     return config
 
+LOADED_ACTION_OPTIONS: dict[str, dict] = {}
 FILTER_SKIP_LOAD_FOR: set[Filter] = set()
 
 def _load_filters_from_config():
+    incepted_filters: set[str] = set()
     print(f"Loading filters from config file {shared.FILTERCONFIG_FILENAME}")
     config = load_configdict_from_filename(shared.FILTERCONFIG_FILENAME, shared.FILTERCONFIG_BACKUP_FILENAME)
     for name, filter in config.items():
@@ -1242,7 +1273,10 @@ def _load_filters_from_config():
         title = config_get_string(filter, "title")
         parsed_actions: list[ApplyableAction] = []
         if has_single:
-            parsed_actions.append(TransformAction(FILTERS, config_get_string(filter, "action")))
+            args = {}
+            if config_has_key(filter, "args"):
+                args = config_get_dict(filter, "args")
+            parsed_actions.append(TransformAction(FILTERS, config_get_string(filter, "action"), args))
         elif has_double:
             actions = config_get_list(filter, "actions")
             for action_name in actions:
@@ -1252,7 +1286,10 @@ def _load_filters_from_config():
                 typ = config_get_string(action, "type")
                 if typ == "script":
                     filename = config_get_string(action, "script")
-                    parsed_actions.append(TransformAction(FILTERS, filename))
+                    args = {}
+                    if config_has_key(action, "args"):
+                        args = config_get_dict(action, "args")
+                    parsed_actions.append(TransformAction(FILTERS, filename, args))
                 elif typ == "filter":
                     filter_to_apply = config_get_string(action, "name")
                     mode = None
@@ -1260,6 +1297,7 @@ def _load_filters_from_config():
                         mode = config_get_string(action, "mode")
                     if mode is None or mode == "enable":
                         parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
+                        incepted_filters.add(filter_to_apply)
                     elif mode == "disable":
                         parsed_actions.append(SelfishAction(FILTERS, filter_to_apply))
                     else:
@@ -1286,6 +1324,22 @@ def _load_filters_from_config():
             color = config_get_string(filter, "color")
         if config_has_key(filter, "text_color"):
             text_color = config_get_string(filter, "text_color")
+        action_options = None
+        if config_has_key(filter, "action_options"):
+            action_options = config_get_dict(filter, "action_options")
+            if not has_single:
+                raise ConfigError(f"Couldn't set the action_options of {name} because {name} uses \"actions\", not \"action\".")
+            single_action = parsed_actions[0]
+            if not isinstance(single_action, TransformAction):
+                raise ConfigError(f"Couldn't set the action_options of {name} because the single action wasn't a script, it was {type(single_action).__name__}.")
+            if LOADED_ACTION_OPTIONS.get(single_action.src):
+                raise ConfigError(f"Couldn't set the action_options of {name} because scripts can only have one action_option. If you use {single_action.src} in two filters, you need to seperate it into it's own filter. You can use \"actions\" and an action with type = \"filter\" and mode = \"enable\".")
+            LOADED_ACTION_OPTIONS[single_action.src] = action_options
+        else:
+            if has_single:
+                src = typing.cast(TransformAction, parsed_actions[0]).src
+                if LOADED_ACTION_OPTIONS.get(src) is not None:
+                    raise ConfigError(f"Couldn't create the filter {name} because a second filter already defines {src}, but with \"action_options\". If you use {src} in two filters, you need to seperate it into it's own filter.")
         if group == "default" and exclusive:
             raise ConfigError(f"Can't create filter {name} that has \"exclusive\" set to true while being on the default group.")
         filter_not_adding = f"Not adding filter {name} \"{title}\""
@@ -1309,6 +1363,12 @@ def _load_filters_from_config():
         )
         if not add_filter:
             FILTER_SKIP_LOAD_FOR.add(created)
+    for incepted_filter in incepted_filters:
+        for disabled_filter in FILTER_SKIP_LOAD_FOR:
+            if disabled_filter.name == incepted_filter:
+                print(f"READDING FILTER: {disabled_filter.name} TO LOAD QUEUE. Another action enables this filter.")
+                FILTER_SKIP_LOAD_FOR.remove(disabled_filter)
+                break
 
 path_to_model = "UNKNOWN_MODEL_PATH"
 model_keywords: list[str] = []
@@ -2352,16 +2412,24 @@ def load_model(finished: threading.Event, should_spin: Box[bool]):
         for action in filter.actions:
             if not isinstance(action, TransformAction):
                 continue
-            try:
-                loader = action.defined_on_load
-            except AttributeError:
+            if action.is_loading_complete():
+                print(f"Skipping duplicate load for action {action} in {filter.name}")
                 continue
             def settext(text: str):
                 _set_model_loadingtext(f"Loading plugin \"{filter.name}\":\n{text}")
-            state = shared.PluginLoadingState(window=root, settext=settext, quit=quit, cancel_init=cancel_init, show_spinner=show_spinner, hide_spinner=hide_spinner)
+            state = shared.PluginLoadingState(
+                window=root,
+                settext=settext,
+                quit=quit,
+                cancel_init=cancel_init,
+                show_spinner=show_spinner,
+                hide_spinner=hide_spinner,
+                filter_name = filter.name,
+                action_options=LOADED_ACTION_OPTIONS.get(action.src)
+                )
             try:
                 settext("Loading...")
-                loader(state)
+                action.run_defined_loader(state)
             except Exception as e:
                 raise RuntimeError(f"Exception encountered while loading {filter.name}: ({type(e).__name__}): {e}")
     show_spinner()
