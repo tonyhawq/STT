@@ -17,9 +17,12 @@
 # action = "path/to/python/file.py" (filter to enable/disable)
 #
 # args are passed to .process in the action. They can change between filters and apply at runtime.
-# args = { some = "table", of = "values", or_numbers = 0.123, or_anything_really = [true] }
+# (optional) args = { some = "table", of = "values", or_numbers = 0.123, or_anything_really = [true] }
 #
-# action option section: some actions require extra settings.
+# the priority of applying this action. High priority actions will apply first, low priority actions will apply last
+# (optional) priority = "highest" or "high" or "default" or "low" or "lowest"
+#
+# (optional) action option section: some actions require extra settings.
 # add them here! NOTE: action_options are on LOAD TIME for actions, not runtime!
 #                      you can only define action_options in one filter. If you want
 #                      to change filter behavior at runtime in one script, use args.
@@ -87,6 +90,7 @@ group = "radio"
 exclusive = true
 color = "dark blue"
 text_color = "white"
+priority = "low"
 action = "filters/binary.py"
 
 [cargo]
@@ -96,6 +100,7 @@ group = "radio"
 exclusive = true
 color = "DarkGoldenrod1"
 text_color = "black"
+priority = "low"
 action = "filters/cargo.py"
 
 [command]
@@ -105,6 +110,7 @@ group = "radio"
 exclusive = true
 color = "DeepPink"
 text_color = "black"
+priority = "low"
 action = "filters/command.py"
 
 [engineering]
@@ -114,6 +120,7 @@ group = "radio"
 exclusive = true
 color = "DarkOrange"
 text_color = "black"
+priority = "low"
 action = "filters/engineering.py"
 
 [medical]
@@ -123,6 +130,7 @@ group = "radio"
 exclusive = true
 color = "aqua"
 text_color = "black"
+priority = "low"
 action = "filters/medical.py"
 
 [science]
@@ -132,6 +140,7 @@ group = "radio"
 exclusive = true
 color = "purple"
 text_color = "white"
+priority = "low"
 action = "filters/science.py"
 
 [security]
@@ -141,14 +150,17 @@ group = "radio"
 exclusive = true
 color = "red"
 text_color = "black"
+priority = "low"
 action = "filters/security.py"
 
 [all_caps]
 title = "CAPS"
+priority = "high"
 action = "filters/all_caps.py"
 
 [excited]
 title = "!!!"
+priority = "high"
 action = "filters/excited.py"
 
 [rage.caps]

@@ -199,9 +199,10 @@ def tk_config(obj, **kwargs):
     obj.config(**kwargs)
 
 class ApplyableAction:
-    def __init__(self, name: str, manager: "FilterManager"):
+    def __init__(self, name: str, manager: "FilterManager", priority: float):
         self.manager = manager
         self.name = name
+        self.priority = priority
         self.enabled_by: dict[str, bool] = {}
         self.action: typing.Callable[[str], str] = ApplyableAction.DefaultAction
 
@@ -225,8 +226,8 @@ class ApplyableAction:
             raise RuntimeError(f"An error occurred while transforming {input} in {self.name}: {str(e)}") from e
 
 class TransformAction(ApplyableAction):
-    def __init__(self, manager: "FilterManager", script_filename: str, enabling_args: dict[str, typing.Any]):
-        super().__init__(os.path.splitext(os.path.basename(script_filename))[0] + "." + str(uuid.uuid4()), manager)
+    def __init__(self, manager: "FilterManager", priority: float, script_filename: str, enabling_args: dict[str, typing.Any]):
+        super().__init__(os.path.splitext(os.path.basename(script_filename))[0] + "." + str(uuid.uuid4()), manager, priority)
         self.src = str(Path(script_filename).resolve())
         self.args = enabling_args
         spec = importlib.util.spec_from_file_location(os.path.splitext(os.path.basename(script_filename))[0], script_filename)
@@ -274,8 +275,8 @@ class TransformAction(ApplyableAction):
         return "TransformAction." + self.name
 
 class SetPromptAction(ApplyableAction):
-    def __init__(self, manager: "FilterManager", prompt: str):
-        super().__init__("setprompt." + str(uuid.uuid4()), manager)
+    def __init__(self, manager: "FilterManager", priority: float, prompt: str):
+        super().__init__("setprompt." + str(uuid.uuid4()), manager, priority)
         self.action = ApplyableAction.DefaultAction
         self.prompt = prompt
 
@@ -301,8 +302,8 @@ class SetPromptAction(ApplyableAction):
         asr_model.set_prompt(asr_model.default_prompt())
 
 class InceptionAction(ApplyableAction):
-    def __init__(self, manager: "FilterManager", filter_to_apply: str):
-        super().__init__(filter_to_apply + ".applier."+ str(uuid.uuid4()), manager)
+    def __init__(self, manager: "FilterManager", priority: float, filter_to_apply: str):
+        super().__init__(filter_to_apply + ".applier."+ str(uuid.uuid4()), manager, priority)
         self.action = ApplyableAction.DefaultAction
         self.filter = filter_to_apply
     
@@ -316,8 +317,8 @@ class InceptionAction(ApplyableAction):
         return "InceptionAction." + self.name
 
 class SelfishAction(InceptionAction):
-    def __init__(self, manager: "FilterManager", filter_to_apply: str):
-        super().__init__(manager, filter_to_apply)
+    def __init__(self, manager: "FilterManager", priority: float, filter_to_apply: str):
+        super().__init__(manager, priority, filter_to_apply)
     
     def on_enable(self, source: "Filter"):
         self.manager.disable_filter(self.filter, self.name)
@@ -508,6 +509,7 @@ class FilterManager:
             return
         if action not in self.actionlist:
             self.actionlist.append(action)
+            self.actionlist.sort(key=lambda act: act.priority, reverse=True)
     
     def _impl_disable_action(self, action: ApplyableAction):
         self.enabled_actions.pop(action.name, None)
@@ -1255,6 +1257,33 @@ def load_configdict_from_filename(filename: str, backup: str) -> dict:
 LOADED_ACTION_OPTIONS: dict[str, dict] = {}
 FILTER_SKIP_LOAD_FOR: set[Filter] = set()
 
+def parse_priority(prio: str) -> float:
+    prio = prio.lower().strip()
+    split = prio.split("+")
+    if len(split) > 2:
+        raise RuntimeError(f"Priority \"{prio}\" has more than one \"+\".")
+    if len(split) < 1:
+        raise RuntimeError(f"Priority \"{prio}\" is completely broken. Something has gone terribly wrong.")
+    prio_text = split[0]
+    base_prio = 0
+    if prio_text == "highest":
+        base_prio = 2
+    elif prio_text == "high":
+        base_prio = 1
+    elif prio_text == "low":
+        base_prio = -1
+    elif prio_text == "lowest":
+        base_prio = -2
+    secondary_prio = 0
+    if len(split) == 2:
+        try:
+            secondary_prio = float(split[1]) / 1000
+            if secondary_prio >= 1:
+                raise RuntimeError(f"Priority \"{prio}\" has a secondary priority of \"{split[1]}\". Secondary priorities should be less than 1,000.")
+        except:
+            raise RuntimeError(f"Priority \"{prio}\" has a secondary priority \"{split[1]}\", which isn't a number. Priorities should be priority+number")
+    return base_prio + secondary_prio
+
 def _load_filters_from_config():
     incepted_filters: set[str] = set()
     print(f"Loading filters from config file {shared.FILTERCONFIG_FILENAME}")
@@ -1273,10 +1302,13 @@ def _load_filters_from_config():
         title = config_get_string(filter, "title")
         parsed_actions: list[ApplyableAction] = []
         if has_single:
+            priority = 0
+            if config_has_key(filter, "priority"):
+                priority = parse_priority(config_get_string(filter, "priority"))
             args = {}
             if config_has_key(filter, "args"):
                 args = config_get_dict(filter, "args")
-            parsed_actions.append(TransformAction(FILTERS, config_get_string(filter, "action"), args))
+            parsed_actions.append(TransformAction(FILTERS, priority, config_get_string(filter, "action"), args))
         elif has_double:
             actions = config_get_list(filter, "actions")
             for action_name in actions:
@@ -1284,27 +1316,30 @@ def _load_filters_from_config():
                     raise ConfigTypeError(f"Action {action_name} is not a string; instead is {type(action_name).__name__}")
                 action = config_get_dict(filter, action_name)
                 typ = config_get_string(action, "type")
+                priority = 0
+                if config_has_key(action, "priority"):
+                    priority = parse_priority(config_get_string(action, "priority"))
                 if typ == "script":
                     filename = config_get_string(action, "script")
                     args = {}
                     if config_has_key(action, "args"):
                         args = config_get_dict(action, "args")
-                    parsed_actions.append(TransformAction(FILTERS, filename, args))
+                    parsed_actions.append(TransformAction(FILTERS, priority, filename, args))
                 elif typ == "filter":
                     filter_to_apply = config_get_string(action, "name")
                     mode = None
                     if config_has_key(action, "mode"):
                         mode = config_get_string(action, "mode")
                     if mode is None or mode == "enable":
-                        parsed_actions.append(InceptionAction(FILTERS, filter_to_apply))
+                        parsed_actions.append(InceptionAction(FILTERS, priority, filter_to_apply))
                         incepted_filters.add(filter_to_apply)
                     elif mode == "disable":
-                        parsed_actions.append(SelfishAction(FILTERS, filter_to_apply))
+                        parsed_actions.append(SelfishAction(FILTERS, priority, filter_to_apply))
                     else:
                         raise ConfigError(f"Attempted to create an action of type \"{typ}\" with an invalid mode of \"{mode}\", expected \"enable\" or \"disable\" for action {config_make_cfgsrc_ctx(action, action_name)}")
                 elif typ == "prompt":
                     prompt_to_set = config_get_string(action, "prompt")
-                    parsed_actions.append(SetPromptAction(FILTERS, prompt_to_set))
+                    parsed_actions.append(SetPromptAction(FILTERS, priority, prompt_to_set))
                 else:
                     raise ConfigError(f"Attempted to create an action of type \"{typ}\". Expected \"script\", \"prompt\", or \"type\" for action {config_make_cfgsrc_ctx(action, action_name)}")
         activation = FilterActivation("unbound", True)
