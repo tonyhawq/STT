@@ -6,6 +6,7 @@ class ParakeetV2(shared.SimpleASRModel):
         super().__init__(state)
         model_path = f"{state.model_dir}parakeet-tdt-0.6b-v2.nemo"
         if not os.path.exists(model_path):
+            state.hide_spinner()
             if not state.ask_allow_or_deny(f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?"):
                 state.quit()
             state.show_spinner()

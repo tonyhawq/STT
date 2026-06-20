@@ -7,6 +7,7 @@ class GraniteSpeech4p1x2B(shared.SimpleASRModel):
         super().__init__(state)
         model_path = f"{state.model_dir}granite-speech-4.1-2b"
         if not os.path.exists(model_path):
+            state.hide_spinner()
             if not state.ask_allow_or_deny(f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/ibm-granite/granite-speech-4.1-2b\"?"):
                 state.quit()
             state.show_spinner()

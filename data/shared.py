@@ -15,6 +15,7 @@ import ctypes
 import ctypes.wintypes
 import uuid
 import re
+import tomllib
 
 T = typing.TypeVar("T")
 
@@ -33,6 +34,23 @@ CONFIG_FILENAME = CONFIG_PATH + "userconfig.toml"
 CONFIG_BACKUP_FILENAME = CONFIG_PATH + "exampleconfig.toml"
 FILTERCONFIG_FILENAME = CONFIG_PATH + "filters.toml"
 FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
+
+def get_model_path():
+    print("get_model_path called. this function is really slow and sucks.")
+    with open(CONFIG_FILENAME, "rb") as cfgf:
+        cfg = tomllib.load(cfgf)
+        meta = cfg.get("meta")
+        backupstr = f"Look at \"{CONFIG_BACKUP_FILENAME}\" to see what the config file should look like."
+        if meta is None:
+            raise RuntimeError(f"Config file \"{CONFIG_FILENAME}\" is missing the section \"meta\". {backupstr}")
+        if type(meta) is not dict:
+            raise RuntimeError(f"Section \"meta\" is not a dictionary. {backupstr}")
+        model_path = meta.get("path_to_model")
+        if model_path is None:
+            raise RuntimeError(f"Config file \"{CONFIG_FILENAME}\" is missing \"path_to_model\" in the \"meta\" section. {backupstr}")
+        if type(model_path) is not str:
+            raise RuntimeError(f"\"path_to_model\" is not a string. {backupstr}")
+        return model_path
 
 DEFAULT_WINDOW_WIDTH = 300
 DEFAULT_WINDOW_HEIGHT = 100
@@ -130,14 +148,20 @@ def _set_mbox_time():
     global LAST_MBOX_TIME
     LAST_MBOX_TIME = time.time()
 
+def record_exception(e: Exception, context: str | None = None) -> str:
+    if context is None:
+        context = f"No context given for exception ({type(e).__name__}): {e}\n" + exception_to_filtered_traceback(e, context)
+    filename = DATA_PATH + "logs/" + str(time.time()) + ".log"
+    with io.open(DATA_PATH + "current.log", "w") as log:
+        log.write(context)
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with io.open(filename, "w") as log:
+        log.write(context)
+    return filename
+
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
-        filename = DATA_PATH + "logs/" + str(time.time()) + ".log"
-        with io.open(DATA_PATH + "current.log", "w") as log:
-            log.write(context)
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        with io.open(filename, "w") as log:
-            log.write(context)
+        filename = record_exception(exception, context)
         message = f"{type(exception).__name__}:\n{exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
         def show_mbox():
             global MBOX_POS
@@ -166,8 +190,25 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
         print(errorstr)
         quit_error(errorstr)
 
+ReportExceptionHook = typing.Callable[[Exception, str | None], typing.Any]
+
+_exception_hooks: dict[str, ReportExceptionHook] = {}
+
+def add_exception_hook(name: str, func: ReportExceptionHook):
+    if _exception_hooks.get(name) is not None:
+        raise RuntimeError(f"Couldn't add exception hook {name}, {name} is already registered")
+    _exception_hooks[name] = func
+
+def remove_exception_hook(name: str):
+    if _exception_hooks.get(name) is None:
+        raise RuntimeError(f"Couldn't remove exception hook {name}, {name} isn't registered.")
+    _exception_hooks.pop(name)
+
 def report_exception(e: Exception, context: str | None = None):
-    main_thread_async(_global_exception_handler, e, exception_to_filtered_traceback(e, context=context))
+    context = exception_to_filtered_traceback(e, context=context)
+    for hook in _exception_hooks.values():
+        hook(e, context)
+    main_thread_async(_global_exception_handler, e, context)
 
 def _thread_ctx(func: typing.Callable, context: str, *args, **kwargs):
     try:
@@ -291,7 +332,7 @@ def spawn_thread(func: typing.Callable, *args, **kwargs):
 def quit() -> typing.Any:
     raise RuntimeError("Default shared.quit called. Was shared.begin called before this point?")
 
-def quit_error(text: str) -> typing.Any:
+def quit_error(text: str, source: Exception | None = None) -> typing.Any:
     raise RuntimeError(f"shared.quit_error called with text {text}. Was shared.begin called before this point?")
 
 def main_thread_sync(_: typing.Callable[..., T], *args, **kwargs) -> T:
@@ -302,7 +343,7 @@ def main_thread_async(_: typing.Callable, *args, **kwargs):
 
 def begin(
         quit_func: typing.Callable[[], typing.Any],
-        quit_error_func: typing.Callable[[str], typing.Any],
+        quit_error_func: typing.Callable[[str, Exception | None], typing.Any],
         main_thread_async_func,
         main_thread_sync_func
         ):
@@ -311,8 +352,8 @@ def begin(
     global main_thread_sync
     global main_thread_async
     quit = quit_func
-    def qerrwrapper(text: str):
-        quit_error_func(text)
+    def qerrwrapper(text: str, source: Exception | None = None):
+        quit_error_func(text, source)
     quit_error = qerrwrapper
     main_thread_async = main_thread_async_func
     main_thread_sync = main_thread_sync_func
@@ -349,30 +390,10 @@ class Checkpoint:
 class ModelInitCancelledError(RuntimeError):
     pass
 
-class ModelLoadingState:
-    def __init__(self,
-                 window: tk.Tk,
-                 settext: typing.Callable[[str], None],
-                 quit: typing.Callable[[], None],
-                 cancel_init: typing.Callable[[], typing.Any],
-                 show_spinner: typing.Callable[[], typing.Any],
-                 hide_spinner: typing.Callable[[], typing.Any],
-                 model_dir: str,
-                 prompt: str,
-                 model_keywords: list[str],
-                 allow_cpu: bool
-                 ):
+class SharedLoadingState:
+    def __init__(self, window: tk.Tk, settext: typing.Callable[[str], typing.Any]):
         self.window = window
         self.settext = settext
-        self.quit = quit
-        self.cancel_init = cancel_init
-        self.model_dir = model_dir
-        self.allow_cpu = allow_cpu
-        self.show_spinner = show_spinner
-        self.hide_spinner = hide_spinner
-        self.model_keywords = model_keywords
-        self.prompt = prompt
-        self.checkpoints = Checkpoint()
 
     def tk_config(self, widget: tk.BaseWidget, *args, **kwargs):
         def worker():
@@ -383,9 +404,34 @@ class ModelLoadingState:
         def worker():
             self.window.minsize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         main_thread_sync(worker)
+    
+    def queue_mainthread(self, func: typing.Callable[..., typing.Any], *args, **kwargs):
+        def wrapper():
+            func(*args, **kwargs)
+        self.window.after(0, wrapper)
+
+    def mainthread(self, func: typing.Callable[..., T], *args, **kwargs) -> T:
+        if threading.current_thread() is threading.main_thread():
+            return func(*args, **kwargs)
+        value = None
+        exception = None
+        complete = threading.Event()
+        def wrapper():
+            nonlocal value
+            nonlocal exception
+            try:
+                value = func(*args, **kwargs)
+            except BaseException as e:
+                exception = e
+            finally:
+                complete.set()
+        self.window.after(0, wrapper)
+        complete.wait()
+        if exception is not None:
+            raise exception
+        return typing.cast(T, value)
 
     def ask_allow_or_deny(self, text: str) -> bool:
-        self.hide_spinner()
         self.settext(text)
         def _resize_window_first():
             if self.window.winfo_width() < 500:
@@ -427,6 +473,46 @@ class ModelLoadingState:
             self.window.update_idletasks()
             self.window.geometry(f"{self.window.winfo_reqwidth()}x{self.window.winfo_reqheight()}")
         main_thread_sync(worker)
+
+class PluginLoadingState(SharedLoadingState):
+    def __init__(self,
+                 window: tk.Tk,
+                 settext: typing.Callable[[str], typing.Any],
+                 quit: typing.Callable[[], typing.Any],
+                 cancel_init: typing.Callable[[], typing.Any],
+                 show_spinner: typing.Callable[[], typing.Any],
+                 hide_spinner: typing.Callable[[], typing.Any]
+                 ):
+        super().__init__(window, settext)
+        self.settext = settext
+        self.quit = quit
+        self.cancel_init = cancel_init
+        self.show_spinner = show_spinner
+        self.hide_spinner = hide_spinner
+
+class ModelLoadingState(SharedLoadingState):
+    def __init__(self,
+                 window: tk.Tk,
+                 settext: typing.Callable[[str], typing.Any],
+                 quit: typing.Callable[[], typing.Any],
+                 cancel_init: typing.Callable[[], typing.Any],
+                 show_spinner: typing.Callable[[], typing.Any],
+                 hide_spinner: typing.Callable[[], typing.Any],
+                 model_dir: str,
+                 prompt: str,
+                 model_keywords: list[str],
+                 allow_cpu: bool
+                 ):
+        super().__init__(window, settext)
+        self.quit = quit
+        self.cancel_init = cancel_init
+        self.model_dir = model_dir
+        self.allow_cpu = allow_cpu
+        self.show_spinner = show_spinner
+        self.hide_spinner = hide_spinner
+        self.model_keywords = model_keywords
+        self.prompt = prompt
+        self.checkpoints = Checkpoint()
 
     def show_cpu_warning(self):
         def confirm_cpu():
@@ -587,32 +673,6 @@ class ModelLoadingState:
                 write_log(f"PyTorch install URL:")
                 write_log(f"  {suggested_cuda_URL()}")
         self.mainthread(worker)
-
-    def queue_mainthread(self, func: typing.Callable[..., typing.Any], *args, **kwargs):
-        def wrapper():
-            func(*args, **kwargs)
-        self.window.after(0, wrapper)
-
-    def mainthread(self, func: typing.Callable[..., T], *args, **kwargs) -> T:
-        if threading.current_thread() is threading.main_thread():
-            return func(*args, **kwargs)
-        value = None
-        exception = None
-        complete = threading.Event()
-        def wrapper():
-            nonlocal value
-            nonlocal exception
-            try:
-                value = func(*args, **kwargs)
-            except BaseException as e:
-                exception = e
-            finally:
-                complete.set()
-        self.window.after(0, wrapper)
-        complete.wait()
-        if exception is not None:
-            raise exception
-        return typing.cast(T, value)
 
 class SimpleASRModel:
     def __init__(self, state: ModelLoadingState):

@@ -21,7 +21,7 @@ try:
     import psutil
     import uuid
     import pyloudnorm
-    import subprocess
+    from pathlib import Path
     import numpy as np
     import functools
     import math
@@ -52,12 +52,18 @@ except ImportError as e:
         pass
     sys.exit(-1)
 
+sys.path.insert(0, str(Path(__file__).parent))
+
 FINAL_FATAL_MESSAGE: str | None = None
 
 def quit_normal():
     root.destroy()
 
-def quit_with_errorbox(message):
+def quit_with_errorbox(message: str, source: Exception | None = None):
+    if source is None:
+        shared.record_exception(RuntimeError(f"quit_with_errorbox called with message \"{message}\", no exception given."))
+    else:
+        shared.record_exception(source)
     global FINAL_FATAL_MESSAGE
     FINAL_FATAL_MESSAGE = message
     root.destroy()
@@ -88,6 +94,7 @@ def main_thread(func):
     return wrapper
 
 def main_thread_async(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if threading.current_thread() is threading.main_thread():
             func(*args, **kwargs)
@@ -229,6 +236,10 @@ class TransformAction(ApplyableAction):
         if not hasattr(module, "process"):
             raise ImportError(f"Plugin {script_filename} does not have a process() function.")
         self.action = module.process
+        if not hasattr(module, "on_load"):
+            print(f"Plugin {script_filename} does not have a on_load function.")
+        else:
+            self.defined_on_load = module.on_load
     
     def __repr__(self):
         return "TransformAction." + self.name
@@ -236,7 +247,7 @@ class TransformAction(ApplyableAction):
 class SetPromptAction(ApplyableAction):
     def __init__(self, manager: "FilterManager", prompt: str):
         super().__init__("setprompt." + str(uuid.uuid4()), manager)
-        self.action = SetPromptAction.noop
+        self.action = ApplyableAction.DefaultAction
         self.prompt = prompt
 
     def on_enable(self, source: "Filter"):
@@ -259,15 +270,11 @@ class SetPromptAction(ApplyableAction):
         if asr_model is None or not asr_model.supports_prompting():
             raise RuntimeError(f"Current ASR model {asr_model} doesn't support prompting.")
         asr_model.set_prompt(asr_model.default_prompt())
-    
-    @staticmethod
-    def noop(input):
-        return input
 
 class InceptionAction(ApplyableAction):
     def __init__(self, manager: "FilterManager", filter_to_apply: str):
         super().__init__(filter_to_apply + ".applier."+ str(uuid.uuid4()), manager)
-        self.action = InceptionAction.noop
+        self.action = ApplyableAction.DefaultAction
         self.filter = filter_to_apply
     
     def on_enable(self, source: "Filter"):
@@ -278,10 +285,6 @@ class InceptionAction(ApplyableAction):
 
     def __repr__(self):
         return "InceptionAction." + self.name
-    
-    @staticmethod
-    def noop(input):
-        return input
 
 class SelfishAction(InceptionAction):
     def __init__(self, manager: "FilterManager", filter_to_apply: str):
@@ -295,9 +298,8 @@ class SelfishAction(InceptionAction):
         return "SelfishAction." + self.name
 
 class FilterActivation:
-    def __init__(self, keybind: str, toggle: bool, suppresses: bool | None = None):
+    def __init__(self, keybind: str, suppresses: bool | None = None):
         self.keybind = keybind
-        self.toggle = toggle
         self.suppresses = suppresses if suppresses is not None else False
 
 class Filter:
@@ -316,9 +318,20 @@ class Filter:
         self.display: "SizedLabel | None" = None
 
     def on_enable(self):
+        print(f"Filter::on_enable({self.name})")
         to_delete = []
         for name, filter in self.manager.enabled_filters.items():
             if (filter is not self) and (filter.exclusive or self.exclusive) and filter.group == self.group:
+                print(f"  Found filter {name} that is {'exclusive' if filter.exclusive else 'excluded'} over group {filter.group}")
+                should_continue = False
+                for action in filter.actions:
+                    print(f"   - Has action {action.name} vs enabled_by: {self.enabled_by}")
+                    if self.enabled_by.get(action.name):
+                        print("  : this filter is enabled by")
+                        should_continue = True
+                        break
+                if should_continue:
+                    continue
                 to_delete.append(name)
         for name in to_delete:
             self.manager.force_disable_filter(name)
@@ -328,6 +341,9 @@ class Filter:
 
     def __str__(self):
         return "Filter." + self.name
+    
+    def __hash__(self) -> int:
+        return str(self).__hash__()
 
 class SizedLabel:
     def __init__(self, parent, width, height, *args, **kwargs):
@@ -403,6 +419,7 @@ DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)#
 class FilterManager:
     def __init__(self, display: ExpandableColumnFlow):
         self.enabled_actions: dict[str, ApplyableAction] = {}
+        self.actionlist: list[ApplyableAction] = []
         self.registered_filters: dict[str, Filter] = {}
         self.enabled_filters: dict[str, Filter] = {}
         self.display = display
@@ -420,30 +437,35 @@ class FilterManager:
         return source in filter.enabled_by
 
     def enable_filter(self, name: str, source: str):
+        print(f"Enabling filter \"{name}\" from \"{source}\"")
         if not name in self.registered_filters:
             raise RuntimeError(f"Attempted to enable filter {name} while {name} does not exist.")
         filter = self.registered_filters[name]
-        if len(filter.enabled_by) == 0:
+        was_disabled = len(filter.enabled_by) == 0
+        filter.enabled_by[source] = True
+        self.enabled_filters[filter.name] = filter
+        if was_disabled:
+            print(f"Filter was disabled, enabled. enabled_by is {filter.enabled_by}")
             filter.on_enable()
             with self.display.lock:
                 filter.display = self.display.add_button()
                 tk_config(filter.display.label, text=filter.title, background=filter.background, foreground=filter.text_color)
-            filter.enabled_by[source] = True
-        self.enabled_filters[filter.name] = filter
         for action in filter.actions:
             self.enable_action(action, source=filter)
 
     def disable_filter(self, name: str, source: str):
+        print(f"Disabling filter \"{name}\" from \"{source}\"")
         if not name in self.registered_filters:
             raise RuntimeError(f"Attempted to disable filter {name} while {name} does not exist.")
         filter = self.registered_filters[name]
         if len(filter.enabled_by) == 0:
+            print(f"Attempted to disable \"{name}\" from source \"{source}\" while enabled_by was zero length")
             return
         filter.enabled_by.pop(source, None)
         if len(filter.enabled_by) > 0:
             return
-        filter.on_disable()
         self.enabled_filters.pop(filter.name, None)
+        filter.on_disable()
         if not (filter.display is None):
             with self.display.lock:
                 self.display.delete_button(filter.display)
@@ -451,19 +473,33 @@ class FilterManager:
         for action in filter.actions:
             self.disable_action(action, source=filter)
 
+    def _impl_enable_action(self, action: ApplyableAction):
+        self.enabled_actions[action.name] = action
+        if action is ApplyableAction.DefaultAction:
+            return
+        if action not in self.actionlist:
+            self.actionlist.append(action)
+    
+    def _impl_disable_action(self, action: ApplyableAction):
+        self.enabled_actions.pop(action.name, None)
+        if action is ApplyableAction.DefaultAction:
+            return
+        if action in self.actionlist:
+            self.actionlist.remove(action)
+
     def enable_action(self, action: ApplyableAction, source: Filter):
         action.enabled_by[source.name] = True
         if action.name in self.enabled_actions:
             return
-        self.enabled_actions[action.name] = action
+        self._impl_enable_action(action)
         action.on_enable(source)
     
     def disable_action(self, action: ApplyableAction, source: Filter):
         action.enabled_by.pop(source.name, None)
         if len(action.enabled_by) == 0:
-            self.enabled_actions.pop(action.name, None)
+            self._impl_disable_action(action)
             action.on_disable()
-    
+            
     def force_disable_filter(self, name: str):
         filter = self.registered_filters[name]
         filter.enabled_by = {"FilterManager.force": True}
@@ -471,11 +507,11 @@ class FilterManager:
         
     def force_disable_action(self, action: ApplyableAction):
         action.enabled_by.clear()
-        self.enabled_actions.pop(action.name, None)
+        self._impl_disable_action(action)
         action.on_disable()
 
     def transform_input(self, input: str) -> str:
-        for action in self.enabled_actions.values():
+        for action in self.actionlist:
             input = action.transform(input)
             if not isinstance(input, str):
                 raise RuntimeError(f"Malformed plugin {action.name}: returned {type(input)} instead of str.")
@@ -589,6 +625,21 @@ class Pressable:
         for code in scancodes:
             translated.append(translate_special_scancode(val, code))
         return tuple(translated)
+
+    @staticmethod
+    def hotkey_contains_str(hotkey: str, text: str) -> bool:
+        return text.strip().lower() in Pressable._split_hotkey(hotkey)
+
+    @staticmethod
+    def hotkey_is_str(hotkey: str, text: str) -> bool:
+        return hotkey.strip().lower() == text.strip().lower()
+
+    @staticmethod
+    def _split_hotkey(hotkey: str) -> list[str]:
+        values = hotkey.split("+")
+        for i, value in enumerate(values):
+            values[i] = value.strip().lower()
+        return values
 
     @staticmethod
     def parse_hotkey(hotkey: str) -> "list[list[Pressable]]":
@@ -1166,11 +1217,13 @@ def load_configdict_from_filename(filename: str, backup: str) -> dict:
             try:
                 with io.open(backup, "r") as backup_file:
                     config_file.write(backup_file.read())
-            except IOError:
-                quit_with_errorbox(f"FATAL: Couldn't load {filename} and couldn't load the backup file {backup}.")
+            except IOError as e:
+                quit_with_errorbox(f"FATAL: Couldn't load {filename} and couldn't load the backup file {backup}.", e)
         with io.open(filename, "rb") as config_file:
             config = tomllib.load(config_file)
     return config
+
+FILTER_SKIP_LOAD_FOR: set[Filter] = set()
 
 def _load_filters_from_config():
     print(f"Loading filters from config file {shared.FILTERCONFIG_FILENAME}")
@@ -1216,11 +1269,9 @@ def _load_filters_from_config():
                     parsed_actions.append(SetPromptAction(FILTERS, prompt_to_set))
                 else:
                     raise ConfigError(f"Attempted to create an action of type \"{typ}\". Expected \"script\", \"prompt\", or \"type\" for action {config_make_cfgsrc_ctx(action, action_name)}")
-        activation = FilterActivation("unbound", True, True)
+        activation = FilterActivation("unbound", True)
         if config_has_key(filter, "bind"):
             activation.keybind = config_get_string(filter, "bind")
-        if config_has_key(filter, "toggle"):
-            activation.toggle = config_get_bool(filter, "toggle")
         if config_has_key(filter, "suppress"):
             activation.suppresses = config_get_bool(filter, "suppress")
         group = "default"
@@ -1235,12 +1286,29 @@ def _load_filters_from_config():
             color = config_get_string(filter, "color")
         if config_has_key(filter, "text_color"):
             text_color = config_get_string(filter, "text_color")
-        Filter(name, title, FILTERS, parsed_actions,
-               group,
-               exclusive,
-               activation,
-               background=color,
-               text_color=text_color)
+        if group == "default" and exclusive:
+            raise ConfigError(f"Can't create filter {name} that has \"exclusive\" set to true while being on the default group.")
+        filter_not_adding = f"Not adding filter {name} \"{title}\""
+        add_filter = True
+        if activation is None:
+            print(f"{filter_not_adding} because activation was none.")
+            add_filter = False
+        if not Pressable.hotkey_is_str(activation.keybind, "always") and len(Pressable.parse_hotkey(activation.keybind)) == 0:
+            print(f"{filter_not_adding} because parsed hotkey had zero length.")
+            add_filter = False
+        if config_has_key(filter, "always_load") and config_get_bool(filter, "always_load"):
+            if not add_filter:
+                print(f"Overriding filter addition because always_load was true.")
+                add_filter = True
+        created = Filter(name, title, FILTERS, parsed_actions,
+            group,
+            exclusive,
+            activation,
+            background=color,
+            text_color=text_color
+        )
+        if not add_filter:
+            FILTER_SKIP_LOAD_FOR.add(created)
 
 path_to_model = "UNKNOWN_MODEL_PATH"
 model_keywords: list[str] = []
@@ -2276,6 +2344,27 @@ def load_model(finished: threading.Event, should_spin: Box[bool]):
     model_loading_state.checkpoints.end()
     model_loading_state.checkpoints.print()
     show_spinner()
+    _set_model_loadingtext(f"Loading plugins...")
+    for _, filter in FILTERS.registered_filters.items():
+        if filter in FILTER_SKIP_LOAD_FOR:
+            print(f"Skipping loading of {filter}")
+            continue
+        for action in filter.actions:
+            if not isinstance(action, TransformAction):
+                continue
+            try:
+                loader = action.defined_on_load
+            except AttributeError:
+                continue
+            def settext(text: str):
+                _set_model_loadingtext(f"Loading plugin \"{filter.name}\":\n{text}")
+            state = shared.PluginLoadingState(window=root, settext=settext, quit=quit, cancel_init=cancel_init, show_spinner=show_spinner, hide_spinner=hide_spinner)
+            try:
+                settext("Loading...")
+                loader(state)
+            except Exception as e:
+                raise RuntimeError(f"Exception encountered while loading {filter.name}: ({type(e).__name__}): {e}")
+    show_spinner()
     _load_model_get_hwnd()
     finished.set()
 
@@ -2304,27 +2393,22 @@ class FilterActivationCallback:
         print(f"Pressed FilterActivationCallback for {self.filter.title}")
         was_pressed = self.pressed
         self.pressed = True
-        if self.get_activation_details().toggle:
-            if not was_pressed:
-                if self.filter.manager.is_enabling(self.filter.name, "keypress"):
-                    self.filter.manager.disable_filter(self.filter.name, "keypress")
-                else:
-                    self.filter.manager.enable_filter(self.filter.name, "keypress")
-        else:
-            if not was_pressed:
+        if not was_pressed:
+            if self.filter.manager.is_enabling(self.filter.name, "keypress"):
+                self.filter.manager.disable_filter(self.filter.name, "keypress")
+            else:
                 self.filter.manager.enable_filter(self.filter.name, "keypress")
-
+        
     def on_release(self):
         print(f"Released FilterActivationCallback for {self.filter.title}")
-        was_pressed = self.pressed
         self.pressed = False
-        if self.get_activation_details().toggle:
-            pass
-        else:
-            if was_pressed:
-                self.filter.manager.disable_filter(self.filter.name, "keypress")
 
 def init():
+    def on_exception(e: Exception, context: str | None = None):
+        shared.record_exception(e, context)
+        quit_with_errorbox(f"Encountered an exception while loading: \"{type(e).__name__}\": {e}", e)
+        raise RuntimeError("Quit.")
+    shared.add_exception_hook("model_loading", on_exception)
     startup_time = shared.Timer()
     ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6) # hide console
     wheel = "-"
@@ -2353,7 +2437,12 @@ def init():
         except Exception as e:
             spawn_thread(messagebox.showerror, "An error has occurred", f"Encountered {type(e).__name__} {e} while checking version.")
     print(f"version checking took {startup_time.resetmstrnc()}s")
-    spawn_thread(load_model, loading_finished, can_spin)
+    def load_model_worker():
+        try:
+            load_model(loading_finished, can_spin)
+        except Exception as e:
+            on_exception(e)
+    spawn_thread(load_model_worker)
     data_arrived = threading.Event()
     def finished_checker():
         loading_finished.wait()
@@ -2388,10 +2477,16 @@ def init():
             tk_config(label, text=f"{_curr_model_loadingtext} {wheel}")
         else:
             tk_config(label, text=_curr_model_loadingtext)
+    shared.remove_exception_hook("model_loading")
     if EARLY_GIVEUP_INIT:
         return
     for registered_filter in FILTERS.registered_filters.values():
-        if registered_filter.activation_details is None or len(Pressable.parse_hotkey(registered_filter.activation_details.keybind)) == 0:
+        if registered_filter.activation_details is None:
+            continue
+        if Pressable.hotkey_is_str(registered_filter.activation_details.keybind, "always"):
+            FILTERS.enable_filter(registered_filter.name, "filtermanager.alwayson")
+            continue
+        if len(Pressable.parse_hotkey(registered_filter.activation_details.keybind)) == 0:
             registered_filter.activation_details = None
             continue
         callback = FilterActivationCallback(registered_filter)

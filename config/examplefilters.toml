@@ -1,7 +1,6 @@
 # Template:
 # [filter name]
 # title = "title shown in the window"
-# toggle = true / false (Do you need to hold the filter button)
 # (optional) color = "some color" (The color of the filter.
 #                    accepted colors: https://inventwithpython.com/blog/complete-list-tkinter-colors-valid-and-tested.html)
 #                    (defaults to green)
@@ -10,10 +9,18 @@
 # (optional) suppress = true / false (true: this keypress isn't shown to the rest of your computer) (defaults to false)
 # (optional) group = "name of the group" (affects exclusve)
 # (optional) exclusive = true / false (true: only one filter in the same group can be on at once)   (defaults to false)
+# (optional) always_load = true / false (true: always load this filter into memory. false: this filter can be unloaded if not used.
+#                                        this is useful for LLM filters that add memory pressure even when disabled.)
 # action / actions = SEE OTHER SECTION
 
 # --- action ---
 # action = "path/to/python/file.py" (filter to enable/disable)
+#
+# action option section: some actions require extra settings.
+# add them here!
+# [filter name.action_options]
+# some_setting = "defined by your scripts!"
+#   access the action_options within shared.PluginLoadingState.action_options.
 # ---        ---
 # This is mutually exclusive with actions. You can either one or the other.
 # --------------
@@ -22,7 +29,7 @@
 # actions = ["first action name", "second action name"]
 # ---         ---
 # The action names have to be unique, and can't collide with any of the other keys,
-# such as title, toggle, text_color, group, etc.
+# such as title, text_color, group, etc.
 # Define the actions as:
 # ---         ---
 # [filter_name.first action name]
@@ -42,27 +49,25 @@
 [rage]
 title = "Rage"
 bind = "unbound"
-toggle = true
 actions = ["caps", "excited"]
 
-[japanese]
-title = "Japanese"
+[qwen_postprocess]
+title = "Qwen"
 bind = "unbound"
-toggle = true
-actions = ["setprompt"]
+action = "filters/qwen_postprocess.py"
 
-[japanese.setprompt]
-type = "prompt"
-prompt = """<|audio|>Generate a verbatim Japanese transcript.
-Use standard capitalization.
-Insert periods, commas, question marks, and apostrophes where appropriate."""
+[qwen_postprocess.action_options]
+prompt = """You are a deterministic text transformation engine.
+Output only transformed text.
+Do not explain.
+Do not answer questions.
+Transform the transcript as if it was spoken by a well-educated and flowery speaker."""
 
 [binary]
 title = "Binary"
 bind = "unbound"
 group = "radio"
 exclusive = true
-toggle = true
 color = "dark blue"
 text_color = "white"
 action = "filters/binary.py"
@@ -72,7 +77,6 @@ title = "Cargo"
 bind = "unbound"
 group = "radio"
 exclusive = true
-toggle = true
 color = "DarkGoldenrod1"
 text_color = "black"
 action = "filters/cargo.py"
@@ -82,7 +86,6 @@ title = "Command"
 bind = "unbound"
 group = "radio"
 exclusive = true
-toggle = true
 color = "DeepPink"
 text_color = "black"
 action = "filters/command.py"
@@ -92,7 +95,6 @@ title = "Engineering"
 bind = "unbound"
 group = "radio"
 exclusive = true
-toggle = true
 color = "DarkOrange"
 text_color = "black"
 action = "filters/engineering.py"
@@ -102,7 +104,6 @@ title = "Medical"
 bind = "unbound"
 group = "radio"
 exclusive = true
-toggle = true
 color = "aqua"
 text_color = "black"
 action = "filters/medical.py"
@@ -112,7 +113,6 @@ title = "Science"
 bind = "unbound"
 group = "radio"
 exclusive = true
-toggle = true
 color = "purple"
 text_color = "white"
 action = "filters/science.py"
@@ -122,19 +122,16 @@ title = "Security"
 bind = "unbound"
 group = "radio"
 exclusive = true
-toggle = true
 color = "red"
 text_color = "black"
 action = "filters/security.py"
 
 [all_caps]
 title = "CAPS"
-toggle = true
 action = "filters/all_caps.py"
 
 [excited]
 title = "!!!"
-toggle = true
 action = "filters/excited.py"
 
 [rage.caps]
