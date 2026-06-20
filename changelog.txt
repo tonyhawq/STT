@@ -1,15 +1,17 @@
 ---------------------------------------------------------------------------------------------------
 Version: 1.0.0
-Date: 2026-6-9
+Date: 2026-6-16
   Name:
     - Release 1.0
   Headline:
-    - Adds a super-low-latency chat option
+    - First Release!
   Features:
     - Adds installer.py which manages installation after python is installed and the venv exists
     - Adds a chat submission option that directly sets the value of the input box
     - Adds a loading bar to the changelog loading window
+    - Adds Granite-Speech to the supported ASR models
   Changes:
+    - Models are stored as python files that are loaded based on the config options
     - Moves the internals of the app to data/
     - Moves the config files to config/
     - Setup.bat calls a new installer.py file which has a progressbar

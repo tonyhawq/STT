@@ -64,11 +64,22 @@ model = "parakeet"
 
 # Where is the STT model file located?
 path_to_model = "data/model/"
+
+# Prompt for models that support it. At the moment,
+# only granite speech supports prompting. Access the prompt
+# inside of shared.ModelLoadingState.
+prompt = """<|audio|>transcribe the speech with proper punctuation and capitalization."""
+
+# Words that the program often gets wrong. Only applies
+# to prompted models.
+keywords = ["felenid"]
+
 # Warns you if the model is loaded to the CPU
 # instead of the GPU. Disable if you don't
 # have an NVIDIA card or don't care about
 # decode speeds.
 warn_on_cpu = true
+
 # Enable/disable version checking
 enable_version_checking = true
 window_width = 300

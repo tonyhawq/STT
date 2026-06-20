@@ -26,12 +26,17 @@
 # Define the actions as:
 # ---         ---
 # [filter_name.first action name]
-# type = "script" or "filter"
+# type = "script" or "filter" or "prompt"
+#
 # If it is a script:
 # script = "path/to/python/file.py" (filter to enable / disable)
+#
 # If it is a filter:
 # mode = "enable" or "disable"
 # filter = "name of the filter"
+#
+# If it is a prompt:
+# prompt = "Some system prompt..."
 # ---------------
 
 [rage]
@@ -39,6 +44,18 @@ title = "Rage"
 bind = "unbound"
 toggle = true
 actions = ["caps", "excited"]
+
+[japanese]
+title = "Japanese"
+bind = "unbound"
+toggle = true
+actions = ["setprompt"]
+
+[japanese.setprompt]
+type = "prompt"
+prompt = """<|audio|>Generate a verbatim Japanese transcript.
+Use standard capitalization.
+Insert periods, commas, question marks, and apostrophes where appropriate."""
 
 [binary]
 title = "Binary"

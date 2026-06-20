@@ -233,6 +233,37 @@ class TransformAction(ApplyableAction):
     def __repr__(self):
         return "TransformAction." + self.name
 
+class SetPromptAction(ApplyableAction):
+    def __init__(self, manager: "FilterManager", prompt: str):
+        super().__init__("setprompt." + str(uuid.uuid4()), manager)
+        self.action = SetPromptAction.noop
+        self.prompt = prompt
+
+    def on_enable(self, source: "Filter"):
+        if asr_model is None or not asr_model.supports_prompting():
+            raise RuntimeError(f"Current ASR model {asr_model} doesn't support prompting.")
+        for filter_name in self.manager.enabled_filters:
+            filter = self.manager.registered_filters[filter_name]
+            if filter is source:
+                continue
+            should_disable = False
+            for action in filter.actions:
+                if type(action) is SetPromptAction:
+                    should_disable = True
+                    break
+            if should_disable:
+                self.manager.force_disable_filter(filter_name)
+        asr_model.set_prompt(self.prompt)
+
+    def on_disable(self):
+        if asr_model is None or not asr_model.supports_prompting():
+            raise RuntimeError(f"Current ASR model {asr_model} doesn't support prompting.")
+        asr_model.set_prompt(asr_model.default_prompt())
+    
+    @staticmethod
+    def noop(input):
+        return input
+
 class InceptionAction(ApplyableAction):
     def __init__(self, manager: "FilterManager", filter_to_apply: str):
         super().__init__(filter_to_apply + ".applier."+ str(uuid.uuid4()), manager)
@@ -1180,8 +1211,11 @@ def _load_filters_from_config():
                         parsed_actions.append(SelfishAction(FILTERS, filter_to_apply))
                     else:
                         raise ConfigError(f"Attempted to create an action of type \"{typ}\" with an invalid mode of \"{mode}\", expected \"enable\" or \"disable\" for action {config_make_cfgsrc_ctx(action, action_name)}")
+                elif typ == "prompt":
+                    prompt_to_set = config_get_string(action, "prompt")
+                    parsed_actions.append(SetPromptAction(FILTERS, prompt_to_set))
                 else:
-                    raise ConfigError(f"Attempted to create an action of type \"{typ}\". Expected \"script\" or \"type\" for action {config_make_cfgsrc_ctx(action, action_name)}")
+                    raise ConfigError(f"Attempted to create an action of type \"{typ}\". Expected \"script\", \"prompt\", or \"type\" for action {config_make_cfgsrc_ctx(action, action_name)}")
         activation = FilterActivation("unbound", True, True)
         if config_has_key(filter, "bind"):
             activation.keybind = config_get_string(filter, "bind")
@@ -1209,6 +1243,8 @@ def _load_filters_from_config():
                text_color=text_color)
 
 path_to_model = "UNKNOWN_MODEL_PATH"
+model_keywords: list[str] = []
+model_prompt: str = "NO PROMPT GIVEN"
 
 def load_settings_from_config():
     print(f"Loading from config file {shared.CONFIG_FILENAME}")
@@ -1238,6 +1274,13 @@ def load_settings_from_config():
     CHOSEN_MODEL = config_get_string(meta, "model").strip().lower()
     if CHOSEN_MODEL != "none" and CHOSEN_MODEL != "parakeet" and CHOSEN_MODEL != "granite" and not CHOSEN_MODEL.endswith(".py"):
         raise ConfigError(f"Expected \"model\" in \"meta\" to be either none, parakeet, granite, or a python file, instead it was \"{CHOSEN_MODEL}\"")
+    global model_prompt
+    model_prompt = config_get_string(meta, "prompt")
+    keywords = config_get_list(meta, "keywords")
+    for word in keywords:
+        if type(word) is not str:
+            raise ConfigTypeError(f"Expected keywords to be a list of strings, instead got a {type(word).__name__}")
+        model_keywords.append(word)
     shared.DEFAULT_WINDOW_WIDTH = int(config_get_number(meta, "window_width"))
     shared.DEFAULT_WINDOW_HEIGHT = int(config_get_number(meta, "window_height"))
     @main_thread
@@ -1339,6 +1382,11 @@ def record():
         RECORDING_STREAM.close() # type: ignore
         RECORDING_STREAM = None
         samples = np.frombuffer(b''.join(RECORDING_FRAMES), dtype=np.int16).astype(np.float32) / 32768.0
+        min_duration = 1.0  # seconds
+        min_samples = int(min_duration * 16000)
+        if len(samples) < min_samples:
+            padding = np.zeros(min_samples - len(samples), dtype=np.float32)
+            samples = np.concatenate([samples, padding])
         meter = pyloudnorm.Meter(16000)  # your sample rate
         loudness = meter.integrated_loudness(samples)
         target_lufs = -18.0
@@ -1382,7 +1430,7 @@ def begin_recording():
     if state != State.READY:
         return
     if hwnd_speech_indicator:
-        hwnd_settext("Say \"\"")
+        hwnd_settext("Say \"...\"")
     tk_config(label, text="Recording...")
     with STATUS_LOCK:
         IS_RADIO = False
@@ -1951,6 +1999,7 @@ def reject():
         return
     global STOP_RECORDING
     global CANCEL_PROCESS
+    hwnd_settext("")
     if state == State.RECORDING:
         with STATUS_LOCK:
             STOP_RECORDING = True
@@ -2198,6 +2247,8 @@ def load_model(finished: threading.Event, should_spin: Box[bool]):
         show_spinner=show_spinner,
         hide_spinner=hide_spinner,
         model_dir=path_to_model,
+        prompt=model_prompt,
+        model_keywords=model_keywords,
         allow_cpu=allow_cpu_asr
         )
     if CHOSEN_MODEL is None:

@@ -1,11 +1,9 @@
 import shared
 import os
-import tkinter as tk
-import time
 
-class ParakeetV2:
+class ParakeetV2(shared.SimpleASRModel):
     def __init__(self, state: shared.ModelLoadingState):
-        self.state = state
+        super().__init__(state)
         model_path = f"{state.model_dir}parakeet-tdt-0.6b-v2.nemo"
         if not os.path.exists(model_path):
             if not state.ask_allow_or_deny(f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?"):

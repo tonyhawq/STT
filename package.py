@@ -38,10 +38,12 @@ files_to_package: list[Packageable] = [
     Packageable.file("run.bat", destination="data/run.bat"),
     Packageable.file("setup.bat"),
     Packageable.file("data/stt.py"),
+    Packageable.file("data/shared.py"),
     Packageable.file("data/installer.py"),
     Packageable.file("data/changelog.txt"),
     Packageable.directory("embedded"),
-    Packageable.directory("filters", ignore=[Packageable.directory("filters/__pycache__")])
+    Packageable.directory("filters", ignore=[Packageable.directory("filters/__pycache__")]),
+    Packageable.directory("data/models", ignore=[Packageable.directory("data/models/__pycache__")])
 ]
 
 files_to_package_without_embedded: list[Packageable] = files_to_package.copy()

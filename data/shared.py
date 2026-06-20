@@ -358,6 +358,8 @@ class ModelLoadingState:
                  show_spinner: typing.Callable[[], typing.Any],
                  hide_spinner: typing.Callable[[], typing.Any],
                  model_dir: str,
+                 prompt: str,
+                 model_keywords: list[str],
                  allow_cpu: bool
                  ):
         self.window = window
@@ -368,6 +370,8 @@ class ModelLoadingState:
         self.allow_cpu = allow_cpu
         self.show_spinner = show_spinner
         self.hide_spinner = hide_spinner
+        self.model_keywords = model_keywords
+        self.prompt = prompt
         self.checkpoints = Checkpoint()
 
     def tk_config(self, widget: tk.BaseWidget, *args, **kwargs):
@@ -609,6 +613,22 @@ class ModelLoadingState:
         if exception is not None:
             raise exception
         return typing.cast(T, value)
+
+class SimpleASRModel:
+    def __init__(self, state: ModelLoadingState):
+        self.state = state
+    
+    def transcribe(self, file: str) -> str:
+        raise NotImplementedError()
+    
+    def supports_prompting(self) -> bool:
+        return False
+    
+    def default_prompt(self) -> str:
+        raise NotImplementedError()
+
+    def set_prompt(self, prompt: str):
+        raise NotImplementedError()
 
 class Timer:
     def __init__(self):
