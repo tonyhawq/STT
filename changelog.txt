@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
 Version: 1.0.0
-Date: 2026-6-16
+Date: 2026-6-20
   Name:
     - Release 1.0
   Headline:
@@ -10,8 +10,13 @@ Date: 2026-6-16
     - Adds a chat submission option that directly sets the value of the input box
     - Adds a loading bar to the changelog loading window
     - Adds Granite-Speech to the supported ASR models
+    - Adds filter arguments and filter load hooks
+    - Adds a Qwen2.5-1.5B LLM postprocessing filter
+    - Adds priority to filters
   Changes:
     - Models are stored as python files that are loaded based on the config options
+    - Plugins can have on_load functions for load-time initialization
+    - Plugins can have per-action arguments
     - Moves the internals of the app to data/
     - Moves the config files to config/
     - Setup.bat calls a new installer.py file which has a progressbar
@@ -21,6 +26,7 @@ Date: 2026-6-16
     - Removes input snapshotting during submission as it caused more bugs than it fixed. Introduces a slight regression in smoothness for "chat" and "say" output methods.
     - Fixes some tkinter gui updates not happening on the main thread
     - Assorted locking / threading preemtive bugfixes
+    - Radio modifiers aren't applied twice if a filter applies a radio modifier
 ---------------------------------------------------------------------------------------------------
 Version: 0.0.17
 Date: 2026-6-6
