@@ -205,10 +205,19 @@ def remove_exception_hook(name: str):
     _exception_hooks.pop(name)
 
 def report_exception(e: Exception, context: str | None = None):
+    print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}")
     context = exception_to_filtered_traceback(e, context=context)
-    for hook in _exception_hooks.values():
+    for name, hook in _exception_hooks.items():
+        print(f" Calling hook {name} ({hook}) for shared.report_exception")
         hook(e, context)
     main_thread_async(_global_exception_handler, e, context)
+
+def _try_get_thread_context() -> str | None:
+    try:
+        return thread_context.value
+    except Exception as e:
+        print(f"Couldn't get thread context for thread {threading.current_thread()}: ({type(e).__name__}) {e}")
+        return None
 
 def _thread_ctx(func: typing.Callable, context: str, *args, **kwargs):
     try:
@@ -253,10 +262,13 @@ def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([
             except allowed_exceptions:
                 raise
             except Exception as e:
+                print(f"Encountered an exception while running {func}: ({type(e).__name__}) {e}")
                 try:
-                    report_exception(e, context=thread_context.value)
-                except:
-                    report_exception(e, "No context available for exception.")
+                    print("reporting")
+                    report_exception(e, context=_try_get_thread_context())
+                except Exception as e2:
+                    print(f"reporting failed {e2}")
+            return None
         return wrapper
     return decorator
 
@@ -317,11 +329,9 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: 
     return filtered
 
 def spawn_thread(func: typing.Callable, *args, **kwargs):
-    context = ""
-    try:
-        context = thread_context.value
-    except:
-        pass
+    context = _try_get_thread_context()
+    if context is None:
+        context = ""
     stack = context + filtered_traceback()
     @functools.wraps(func)
     def wrapped_thread_ctx():
