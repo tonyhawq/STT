@@ -204,19 +204,30 @@ def remove_exception_hook(name: str):
         raise RuntimeError(f"Couldn't remove exception hook {name}, {name} isn't registered.")
     _exception_hooks.pop(name)
 
+class ReportExceptionCancellationError(RuntimeError):
+    pass
+
+def CancelExceptionReporting():
+    raise ReportExceptionCancellationError("shared.CancelExceptionReporting was called.")
+
 def report_exception(e: Exception, context: str | None = None):
     print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}")
     context = exception_to_filtered_traceback(e, context=context)
     for name, hook in _exception_hooks.items():
         print(f" Calling hook {name} ({hook}) for shared.report_exception")
-        hook(e, context)
+        try:
+            hook(e, context)
+        except ReportExceptionCancellationError as e2:
+            print(f"HOOK CANCELLED EXCEPTION REPORTING: {e2}")
+            return
     main_thread_async(_global_exception_handler, e, context)
 
-def _try_get_thread_context() -> str | None:
+def _try_get_thread_context(*, showerror: bool = True) -> str | None:
     try:
         return thread_context.value
     except Exception as e:
-        print(f"Couldn't get thread context for thread {threading.current_thread()}: ({type(e).__name__}) {e}")
+        if showerror:
+            print(f"Couldn't get thread context for thread {threading.current_thread()}: ({type(e).__name__}) {e}")
         return None
 
 def _thread_ctx(func: typing.Callable, context: str, *args, **kwargs):
@@ -329,7 +340,7 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: 
     return filtered
 
 def spawn_thread(func: typing.Callable, *args, **kwargs):
-    context = _try_get_thread_context()
+    context = _try_get_thread_context(showerror=False)
     if context is None:
         context = ""
     stack = context + filtered_traceback()
@@ -489,7 +500,7 @@ class PluginLoadingState(SharedLoadingState):
                  window: tk.Tk,
                  settext: typing.Callable[[str], typing.Any],
                  quit: typing.Callable[[], typing.Any],
-                 cancel_init: typing.Callable[[], typing.Any],
+                 cancel_init: typing.Callable[[str], typing.Any],
                  show_spinner: typing.Callable[[], typing.Any],
                  hide_spinner: typing.Callable[[], typing.Any],
                  filter_name: str,
@@ -542,7 +553,7 @@ class ModelLoadingState(SharedLoadingState):
                  window: tk.Tk,
                  settext: typing.Callable[[str], typing.Any],
                  quit: typing.Callable[[], typing.Any],
-                 cancel_init: typing.Callable[[], typing.Any],
+                 cancel_init: typing.Callable[[str], typing.Any],
                  show_spinner: typing.Callable[[], typing.Any],
                  hide_spinner: typing.Callable[[], typing.Any],
                  model_dir: str,
@@ -591,7 +602,7 @@ class ModelLoadingState(SharedLoadingState):
                 self.quit()
                 raise ModelInitCancelledError()
             if choice:
-                self.cancel_init()
+                self.cancel_init("A reboot of STT is required to finish the pytorch download.")
                 self.run_pytorch_downloader()
                 raise ModelInitCancelledError()
 

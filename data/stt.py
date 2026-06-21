@@ -128,6 +128,9 @@ T = typing.TypeVar('T')
 U = typing.TypeVar('U')
 V = typing.TypeVar('V')
 
+def settingsbutton_command():
+    spawn_thread(open_settings)
+
 root = tk.Tk()
 root.config(bg="white")
 root.title("Speech To Text")
@@ -136,6 +139,13 @@ root.minsize(shared.DEFAULT_WINDOW_WIDTH, shared.DEFAULT_WINDOW_HEIGHT)
 label_frame = tk.Frame(root, width = shared.DEFAULT_WINDOW_WIDTH, height = shared.DEFAULT_WINDOW_HEIGHT, bg="white")
 label_frame.pack_propagate(False)
 label_frame.pack(padx=0, pady=0)
+try:
+    settings_icon = tk.PhotoImage(file="data/gear.png").subsample(2, 2)
+except Exception as e:
+    messagebox.showerror("Couldn't load STT", f"Couldn't load data/gear.png: ({type(e).__name__}) {e}")
+    sys.exit(1)
+settings_button = tk.Button(label_frame, image=settings_icon, relief="flat", bg="white", command=settingsbutton_command)
+settings_button.place(x=5, y=5)
 label = tk.Label(label_frame, text="Pre-Init", bg="white", justify="center", font=("Arial", 12))
 label.pack(expand=True)
 
@@ -829,6 +839,9 @@ allow_cpu_asr = True
 chat_delay = 0
 chat_key = ""
 
+def open_settings():
+    pass
+
 def is_key(value: str) -> bool:
     special_keys = [k.name for k in pynput.keyboard.Key]
     return (value in special_keys) or (value in list(string.printable))
@@ -1513,6 +1526,25 @@ class State(Enum):
     PROCESSING = 3
     ACCEPTING = 4
 
+class InitState(Enum):
+    INIT_CANCELLED = -1
+    PREINIT = 1
+    PRESETTINGS = 2
+    POSTSETTINGS = 3
+    PREMODELLOADING = 3
+    POSTMODELLOADING = 4
+    PREFILTERLOADING = 4
+    POSTFILTERLOADING = 5
+    FINISHED = 5
+
+INIT_STATE = InitState.PREINIT
+_init_state_changed = threading.Event()
+
+def set_INIT_STATE(state: int | InitState):
+    global INIT_STATE
+    INIT_STATE = state
+    _init_state_changed.set()
+
 state = State.READY
 STOP_RECORDING = False
 CANCEL_PROCESS = False
@@ -2187,7 +2219,8 @@ def reject():
         return
     global STOP_RECORDING
     global CANCEL_PROCESS
-    hwnd_settext("")
+    if use_hwnd:
+        hwnd_settext("")
     if state == State.RECORDING:
         with STATUS_LOCK:
             STOP_RECORDING = True
@@ -2345,6 +2378,13 @@ def _lazy_get_dreamseeker_hwnd():
         _get_dreamseeker_editbox_hwnd()
 
 EARLY_GIVEUP_INIT = False
+INIT_GIVEUP_REASON = "none"
+
+def giveup_init(reason: str):
+    global EARLY_GIVEUP_INIT
+    global INIT_GIVEUP_REASON
+    EARLY_GIVEUP_INIT = True
+    INIT_GIVEUP_REASON = reason
 
 _curr_model_loadingtext = ""
 _model_loadingtext_changed = threading.Event()
@@ -2417,9 +2457,8 @@ def _load_model_get_hwnd():
 
 def load_model(finished: threading.Event, should_spin: Box[bool]):
     global asr_model
-    def cancel_init():
-        global EARLY_GIVEUP_INIT
-        EARLY_GIVEUP_INIT = True
+    def cancel_init(reason: str):
+        giveup_init(reason)
         finished.set()
     def show_spinner():
         should_spin.value = True
@@ -2453,17 +2492,18 @@ def load_model(finished: threading.Event, should_spin: Box[bool]):
     else:
         spec = importlib.util.spec_from_file_location(CHOSEN_MODEL)
         if spec is None:
-            raise ImportError(f"Could not load spec for {CHOSEN_MODEL}")
+            raise ImportError(f"Couldn't load ASR model {CHOSEN_MODEL} (spec was None)")
         if spec.loader is None:
-            raise ImportError(f"Could not find loader for {CHOSEN_MODEL} {spec}")
+            raise ImportError(f"Couldn't load ASR model {CHOSEN_MODEL} (spec {spec} had None loader)")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         if not hasattr(module, "ASRModel"):
-            raise ImportError(f"While loading a user-defined ASR model, couldn't find the class \"ASRModel\". Did you name your class something else? Ensure that your model is named \"ASRModel\" exactly. ({CHOSEN_MODEL} does not have an ASRModel class.)")
+            raise ImportError(f"While loading a user-defined ASR model, couldn't find the class \"ASRModel\". Did you name your class something else? Ensure that your model is named \"ASRModel\" exactly. ({CHOSEN_MODEL} does not have an ASRModel attribute.)")
         asr_model = module.ASRModel(model_loading_state)
     model_loading_state.checkpoints.end()
     model_loading_state.checkpoints.print()
     show_spinner()
+    set_INIT_STATE(InitState.PREFILTERLOADING)
     _set_model_loadingtext(f"Loading plugins...")
     for _, filter in FILTERS.registered_filters.items():
         if filter in FILTER_SKIP_LOAD_FOR:
@@ -2532,10 +2572,11 @@ class FilterActivationCallback:
         self.pressed = False
 
 def init():
+    set_INIT_STATE(InitState.PRESETTINGS)
     def on_exception(e: Exception, context: str | None = None):
         shared.record_exception(e, context)
-        quit_with_errorbox(f"Encountered an exception while loading: \"{type(e).__name__}\": {e}", e)
-        raise RuntimeError("Quit.")
+        giveup_init(f"Encountered an exception: ({type(e).__name__}) {e}")
+        loading_finished.set()
     shared.add_exception_hook("model_loading", on_exception)
     startup_time = shared.Timer()
     ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6) # hide console
@@ -2566,10 +2607,8 @@ def init():
             spawn_thread(messagebox.showerror, "An error has occurred", f"Encountered {type(e).__name__} {e} while checking version.")
     print(f"version checking took {startup_time.resetmstrnc()}s")
     def load_model_worker():
-        try:
-            load_model(loading_finished, can_spin)
-        except Exception as e:
-            on_exception(e)
+        load_model(loading_finished, can_spin)
+    set_INIT_STATE(InitState.PREMODELLOADING)
     spawn_thread(load_model_worker)
     data_arrived = threading.Event()
     def finished_checker():
@@ -2623,12 +2662,23 @@ def init():
                     callback.on_press,
                     callback.on_release,
                     _suppress=registered_filter.activation_details.suppresses)
+    set_INIT_STATE(InitState.FINISHED)
     spawn_thread(mouse_listener)
     spawn_thread(keyboard_listener)
 
     tk_config(label, text="Waiting...")
 
-root.after(0, spawn_thread, init)
+def bootstrap():
+    try:
+        init()
+    except Exception as e:
+        report_exception(e)
+    if EARLY_GIVEUP_INIT:
+        print(f"Initialization was cancelled due to {INIT_GIVEUP_REASON}")
+        set_INIT_STATE(InitState.INIT_CANCELLED)
+        tk_config(label, text=f"Init cancelled:\n{INIT_GIVEUP_REASON}")
+
+root.after(0, spawn_thread, bootstrap)
 
 root.mainloop()
 
