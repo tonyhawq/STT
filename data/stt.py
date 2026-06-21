@@ -1549,8 +1549,10 @@ def record():
     global state
     global STOP_RECORDING
     global RECORDING_STREAM
+    if not RECORDING_STREAM:
+        raise RuntimeError("Attempted to call record while RECORDING_STREAM was None")
     while True:
-        data = RECORDING_STREAM.read(512) # type: ignore
+        data = RECORDING_STREAM.read(512)
         RECORDING_FRAMES.append(data)
         if STOP_RECORDING:
             break
@@ -1558,8 +1560,8 @@ def record():
         _finalize_process()
         return
     with STATUS_LOCK:
-        RECORDING_STREAM.stop_stream() # type: ignore
-        RECORDING_STREAM.close() # type: ignore
+        RECORDING_STREAM.stop_stream()
+        RECORDING_STREAM.close()
         RECORDING_STREAM = None
         samples = np.frombuffer(b''.join(RECORDING_FRAMES), dtype=np.int16).astype(np.float32) / 32768.0
                          # SECONDS
@@ -1568,7 +1570,7 @@ def record():
             padding = np.zeros(min_samples - len(samples), dtype=np.float32)
             samples = np.concatenate([samples, padding])
         if do_loudness_normalization:
-            meter = pyloudnorm.Meter(16000)  # your sample rate
+            meter = pyloudnorm.Meter(16000)
             loudness = meter.integrated_loudness(samples)
             target_lufs = -18.0
             samples = pyloudnorm.normalize.loudness(samples, loudness, target_lufs)
