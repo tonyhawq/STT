@@ -27,3 +27,4 @@ psutil
 pywinauto
 tomlkit
 torchaudio
+pyloudnorm

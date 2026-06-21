@@ -21,6 +21,8 @@ Date: 2026-6-21
     - Moves the config files to config/
     - Setup.bat calls a new installer.py file which has a progressbar
     - Combination hotkeys (ctrl + g, alt + b, etc..) that have "unbound" in them are parsed as an unbinding
+    - Changes readme.md
+    - Audio is padded and normalized before being sent to ASR
   Bugfixes:
     - Fixes Control::is_pressed not correctly reporting if one of the Control's ControlButtons was in CONTROLBUTTONS_BY_KEY.
     - Removes input snapshotting during submission as it caused more bugs than it fixed. Introduces a slight regression in smoothness for "chat" and "say" output methods.

@@ -80,6 +80,21 @@ keywords = ["felenid"]
 # decode speeds.
 warn_on_cpu = true
 
+# Minimum length of the audio file for it to be used
+# and not ignored. Utterances shorter than this
+# will be discared.
+# In milliseconds.
+minimum_utterance_detection_length = 200
+
+# Minimum length of the audio file sent to the ASR model.
+# Padding will be applied.
+# In milliseconds.
+minimum_utterance_audio_length = 1000
+
+# Do loudness normalization with pyloudnorm before sending
+# the audio to the ASR model?
+do_loudness_normalization = false
+
 # Enable/disable version checking
 enable_version_checking = true
 window_width = 300

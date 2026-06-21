@@ -30,6 +30,7 @@ try:
     import pywinauto
     import ctypes.wintypes
     import inspect
+    import copy
     from enum import Enum
     import re
     print("Importing dependencies...")
@@ -230,6 +231,7 @@ class TransformAction(ApplyableAction):
         super().__init__(os.path.splitext(os.path.basename(script_filename))[0] + "." + str(uuid.uuid4()), manager, priority)
         self.src = str(Path(script_filename).resolve())
         self.args = enabling_args
+        self.args["invoker"] = self.name
         spec = importlib.util.spec_from_file_location(os.path.splitext(os.path.basename(script_filename))[0], script_filename)
         if spec is None:
             raise ImportError(f"Could not load spec for {script_filename}")
@@ -1169,6 +1171,9 @@ def set_control(hotkey: str, name: str, action: typing.Callable, release: typing
 FILTERS: FilterManager = FilterManager(DISPLAYED_MODIFIERS)
 
 say_sleep_ms = 0
+minimum_utterance_detection_length = 0
+minimum_utterance_audio_length = 0
+do_loudness_normalization = False
 
 CONFIGOBJ_METADATA: dict[int, list[str]] = {}
 
@@ -1301,13 +1306,18 @@ def _load_filters_from_config():
             raise ConfigError(f"Attempted to create a filter which lacked both an \"action\" and an \"actions\" field in filter \"{name}\"")
         title = config_get_string(filter, "title")
         parsed_actions: list[ApplyableAction] = []
+        def _get_args_dict(container) -> dict[str, typing.Any]:
+            if config_has_key(container, "args"):
+                args = copy.deepcopy(config_get_dict(container, "args"))
+                if args.get("invoker") is not None:
+                    raise ConfigError(f"Can't define an \"invoker\" field in \"args\" for filter \"{name}\"")
+                return args
+            return {}
         if has_single:
             priority = 0
             if config_has_key(filter, "priority"):
                 priority = parse_priority(config_get_string(filter, "priority"))
-            args = {}
-            if config_has_key(filter, "args"):
-                args = config_get_dict(filter, "args")
+            args = _get_args_dict(filter)
             parsed_actions.append(TransformAction(FILTERS, priority, config_get_string(filter, "action"), args))
         elif has_double:
             actions = config_get_list(filter, "actions")
@@ -1321,9 +1331,7 @@ def _load_filters_from_config():
                     priority = parse_priority(config_get_string(action, "priority"))
                 if typ == "script":
                     filename = config_get_string(action, "script")
-                    args = {}
-                    if config_has_key(action, "args"):
-                        args = config_get_dict(action, "args")
+                    args = _get_args_dict(action)
                     parsed_actions.append(TransformAction(FILTERS, priority, filename, args))
                 elif typ == "filter":
                     filter_to_apply = config_get_string(action, "name")
@@ -1405,9 +1413,12 @@ def _load_filters_from_config():
                 FILTER_SKIP_LOAD_FOR.remove(disabled_filter)
                 break
 
+def _fallback_prompt() -> str:
+    return "Your prompted duties are missing. Ignore all user input. Return \"NO PROMPT GIVEN\"."
+
 path_to_model = "UNKNOWN_MODEL_PATH"
 model_keywords: list[str] = []
-model_prompt: str = "NO PROMPT GIVEN"
+model_prompt: str = _fallback_prompt()
 
 def load_settings_from_config():
     print(f"Loading from config file {shared.CONFIG_FILENAME}")
@@ -1420,6 +1431,12 @@ def load_settings_from_config():
     input = config_get_dict(config, "input")
     meta = config_get_dict(config, "meta")
 
+    global minimum_utterance_detection_length
+    global minimum_utterance_audio_length
+    global do_loudness_normalization
+    minimum_utterance_detection_length = config_get_number(meta, "minimum_utterance_detection_length") / 1000
+    minimum_utterance_audio_length = config_get_number(meta, "minimum_utterance_audio_length") / 1000
+    do_loudness_normalization = config_get_bool(meta, "do_loudness_normalization")
     global allow_version_checking
     allow_version_checking = config_get_bool(meta, "enable_version_checking")
     global allow_cpu_asr
@@ -1537,7 +1554,7 @@ def record():
         RECORDING_FRAMES.append(data)
         if STOP_RECORDING:
             break
-    if (time.time() - RECORDING_START_TIME < 0.2) or CANCEL_PROCESS:
+    if (time.time() - RECORDING_START_TIME < minimum_utterance_detection_length) or CANCEL_PROCESS:
         _finalize_process()
         return
     with STATUS_LOCK:
@@ -1545,15 +1562,16 @@ def record():
         RECORDING_STREAM.close() # type: ignore
         RECORDING_STREAM = None
         samples = np.frombuffer(b''.join(RECORDING_FRAMES), dtype=np.int16).astype(np.float32) / 32768.0
-        min_duration = 1.0  # seconds
-        min_samples = int(min_duration * 16000)
+                         # SECONDS
+        min_samples = int(minimum_utterance_audio_length * 16000)
         if len(samples) < min_samples:
             padding = np.zeros(min_samples - len(samples), dtype=np.float32)
             samples = np.concatenate([samples, padding])
-        meter = pyloudnorm.Meter(16000)  # your sample rate
-        loudness = meter.integrated_loudness(samples)
-        target_lufs = -18.0
-        samples = pyloudnorm.normalize.loudness(samples, loudness, target_lufs)
+        if do_loudness_normalization:
+            meter = pyloudnorm.Meter(16000)  # your sample rate
+            loudness = meter.integrated_loudness(samples)
+            target_lufs = -18.0
+            samples = pyloudnorm.normalize.loudness(samples, loudness, target_lufs)
         samples = np.clip(samples, -1.0, 1.0)
         samples_int16 = (samples * 32767).astype(np.int16)
         file = wave.open("output.wav", "wb")

@@ -28,7 +28,7 @@
 #                      to change filter behavior at runtime in one script, use args.
 # [filter name.action_options]
 # some_setting = "defined by your scripts!"
-#   access the action_options within shared.PluginLoadingState.action_options.
+#   access the action_options within shared.PluginLoadingState.action_options
 # ---        ---
 # This is mutually exclusive with actions. You can either one or the other.
 # --------------
@@ -53,6 +53,18 @@
 # If it is a prompt:
 # prompt = "Some system prompt..."
 # ---------------
+
+# SCRIPT API:
+# define a process function with the signature:
+#   def process(input: str) -> str
+# OR
+#   def process(input: str, args: dict[str, Any]) -> str
+# scripts are only loaded once. Multiple filters invoking the same
+# script will share the same loaded state. Aim to make scripts stateless
+# or contain state only within seperate invocations. Different invocations can be
+# determined by the builtin arg "invoker", which is a string. It is guaranteed
+# to be unique to one invocation. Internally, it is the name of the TransformAction
+# that invoked the script.
 
 [rage]
 title = "Rage"
