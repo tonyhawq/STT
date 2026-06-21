@@ -49,10 +49,14 @@ except ImportError as e:
     print("To resolve, run setup.bat again!")
     print("-" * 30)
     try:
-        messagebox.showerror("Imports failure", f"STT failed to load due to missing imports. This is likely caused by outdated dependencies. To resolve, run setup.bat again!\n\n{e}") #type: ignore
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("Imports failure", f"STT failed to load due to missing imports. This is likely caused by outdated dependencies. To resolve, run setup.bat again!\n\n{e}")
+        except Exception as e:
+            print(f"While showing the errorbox for the error, got another exception ({type(e).__name__}) {e}")
     except Exception as e:
         pass
-    sys.exit(-1)
+    sys.exit(1)
 
 sys.path.insert(0, str(Path(__file__).parent))
 
