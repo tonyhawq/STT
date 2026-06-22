@@ -11,6 +11,7 @@ try:
     import wave
     import tomllib
     import tomlkit
+    import tomlkit.items
     import typing
     import pyperclip
     import keyboard
@@ -865,6 +866,116 @@ def _open_settings_impl():
     with open(shared.CONFIG_FILENAME, "r") as f:
         config = tomlkit.load(f)
 
+    def save_to_cfgmem():
+        if SETTINGS_WINDOW is None:
+            raise RuntimeError("Attempted to call apply_cmd.worker while SETTINGS_WINDOW is None")
+        def convert_type(rawval: str | int | float | bool | list | tk.Variable, typestr: str) -> str | int | float | bool | list:
+            if isinstance(rawval, tk.Variable):
+                value = rawval.get()
+            else:
+                value = rawval
+            if typestr.startswith("list"):
+                typelist = typestr.split("@", 1)
+                if not isinstance(value, list):
+                    raise TypeError(f"Value {value} is not a list.")
+                created = []
+                for val in value:
+                    created.append(convert_type(val, typelist[-1]))
+                return created
+            elif typestr.startswith("literal"):
+                typestr = typestr.removeprefix("literal").removeprefix("'").removesuffix("'")
+                values = typestr.split("|")
+                if not isinstance(value, str):
+                    raise TypeError(f"Value {value} is not a string, so can't match any literal \"{' '.join(values)}\"")
+                if not value in values:
+                    raise TypeError(f"Value {value} doesn't match any literal in {values}")
+                return value
+            elif typestr == "string":
+                if not isinstance(value, str):
+                    raise TypeError(f"Value {value} is not a string.")
+                return value
+            elif typestr == "key":
+                if not isinstance(value, str):
+                    raise TypeError(f"Value {value} is not a string. ({type(value).__name__})")
+                try:
+                    Pressable.parse_hotkey(value)
+                except Exception as e:
+                    raise TypeError(f"Value {value} is not a key. ([{type(e).__name__}] {e})")
+                return value
+            elif typestr == "int":
+                if not isinstance(value, str) and not isinstance(value, int) and not isinstance(value, float):
+                    raise TypeError(f"Value {value} is not an int, float, or a string, instead was {type(value).__name__}")
+                try:
+                    int(value)
+                except Exception as e:
+                    raise TypeError(f"Value {value} couldn't be converted to an int. ([{type(e).__name__}] {e})")
+                if int(value) != float(value):
+                    raise TypeError(f"Value {value} isn't an integer.")
+                return int(value)
+            elif typestr == "float":
+                if not isinstance(value, str) and not isinstance(value, float) and not isinstance(value, int):
+                    raise TypeError(f"Value {value} is not an float, int, or a string, instead was {type(value).__name__}")
+                try:
+                    float(value)
+                except Exception as e:
+                    raise TypeError(f"Value {value} couldn't be converted to a float. ([{type(e).__name__}] {e})")
+                return float(value)
+            elif typestr == "bool":
+                if not isinstance(value, bool):
+                    raise TypeError(f"Value {value} is not a boolean, instead was {type(value).__name__}")
+                return value
+            else:
+                raise TypeError(f"Unknown typestr {typestr}")
+        vars: dict[str, tk.Variable | list[tk.StringVar]] = SETTINGS_WINDOW.vars # type: ignore
+        for typ, var in vars.items():
+            path = typ.split(":")
+            file = path[-1].split("@", 1)
+            extension = file[-1]
+            file = file[0]
+            path = path[:-1]
+            print(f"Saving value {':'.join(path)}:{file} (of type {extension})")
+            try:
+                if isinstance(var, list):
+                    value = convert_type(var, extension)
+                else:
+                    value = convert_type(var.get(), extension)
+            except TypeError as e:
+                raise TypeError(f"Saving \"{file}\" (in {path[0]}) which is a/n {extension}: {e}")
+            current_step = config
+            for next_step in path:
+                current_step = current_step[next_step]
+            current_step = value
+    
+    def save_to_file():
+        save_to_cfgmem()
+        with open(shared.CONFIG_FILENAME, "w") as f:
+            f.write(tomlkit.dumps(config))
+
+    def window_close_hook():
+        if SETTINGS_WINDOW is None:
+            raise RuntimeError("SETTINGS_WINDOW is None on window_close_hook")
+        with open(shared.CONFIG_FILENAME, "r") as f:
+            unmodified = tomlkit.load(f)
+        try:
+            save_to_cfgmem()
+            if unmodified == config:
+                SETTINGS_WINDOW.destroy()
+                return
+        except:
+            pass
+        res = messagebox.askyesno("You have unsaved changes!", "You have unsaved changes! Do you want to save your changes?")
+        if res:
+            try:
+                save_to_file()
+            except Exception as e:
+                def reraise():
+                    raise RuntimeError("Saving encountered an error.") from e
+                spawn_thread(reraise)
+                return
+        SETTINGS_WINDOW.destroy()
+        
+    SETTINGS_WINDOW.protocol("WM_DELETE_WINDOW", window_close_hook)
+
     notebook = ttk.Notebook(SETTINGS_WINDOW)
     notebook.pack(fill="both", expand=True)
 
@@ -889,30 +1000,66 @@ def _open_settings_impl():
     onboarding_tab.rowconfigure(3, weight=1)
     tk.Frame(onboarding_tab).grid(column=0, row=3)
 
-    input_base_frame = tk.Frame(input_tab)
-    input_base_frame.pack(fill="both", expand=True)
-    tk.Button(input_tab, text="Apply", font=header_font).pack(side="left", padx=10, pady=10)
-    tk.Button(input_tab, text="Discard", font=header_font).pack(side="left", padx=10, pady=10)
+    def add_buttons(tab: ttk.Frame) -> tk.Frame:
+        base_frame = tk.Frame(tab)
+        base_frame.pack(fill="both", expand=True)
+        def apply_cmd():
+            apply_button.config(state="disabled")
+            discard_button.config(state="disabled")
+            finished = threading.Event()
+            def runner():
+                try:
+                    try:
+                        save_to_file()
+                    except TypeError as e:
+                        messagebox.showerror("Couldn't save", f"Couldn't save the config. {e}")
+                    finished.set()
+                except:
+                    raise
+                finally:
+                    @main_thread
+                    def reconfigure():
+                        apply_button.config(state="normal")
+                        discard_button.config(state="normal")
+                    reconfigure()
+            spawn_thread(runner)
+        def discard_cmd():
+            if SETTINGS_WINDOW is None:
+                raise RuntimeError("SETTINGS_WINDOW is None within Discard button command.")
+            SETTINGS_WINDOW.destroy()
+        apply_button = tk.Button(tab, text="Apply", font=header_font, command=apply_cmd)
+        apply_button.pack(side="left", padx=10, pady=10)
+        discard_button = tk.Button(tab, text="Discard", font=header_font, command=discard_cmd)
+        discard_button.pack(side="left", padx=10, pady=10)
+        return base_frame
+
+    input_base_frame = add_buttons(input_tab)
+    output_base_frame = add_buttons(output_tab)
+    model_base_frame = add_buttons(model_tab)
+    advanced_base_frame = add_buttons(advanced_tab)
     def _create_infobutton(tab: tk.Widget, text: str) -> tk.Button:
         return tk.Button(tab, image=QUESTION_ICON, relief="flat", bg="white", command=lambda: spawn_thread(lambda: messagebox.showinfo("Info", text)))
 
     def infobutton(tab: tk.Frame, column: int, row: int, text: str):
-        _create_infobutton(tab, text).grid(column=column, row=row, sticky="ew")
+        _create_infobutton(tab, text).grid(column=column, row=row, sticky="new")
 
-    def add_listbox(tab: tk.Frame, row: int, name: str, info: str):
+    def add_listbox(tab: tk.Frame, row: int, name: str, info: str, valuelist: list[str]):
         ttk.Label(tab, text=f"{name}  ").grid(column=0, row=row, sticky="nw")
         _create_infobutton(tab, info).grid(column=3, row=row, sticky="n")
         listbox_frame = ttk.Frame(tab)
         listbox_frame.grid(column=2, row=row, sticky="nsew")
         listbox = tk.Listbox(listbox_frame)
         listbox.pack(side="top", fill="both", expand=True)
+        for value in valuelist:
+            listbox.insert(tk.END, " " + value)
         entry = ttk.Entry(listbox_frame)
         entry.pack(fill="x")
         def add_item():
             text = entry.get().strip()
-            if not text:
+            if not text or text in valuelist:
                 return
-            listbox.insert(tk.END, text)
+            listbox.insert(tk.END, " " + text)
+            valuelist.append(text)
             entry.delete(0, tk.END)
         def remove_item():
             selection = listbox.curselection()
@@ -920,6 +1067,7 @@ def _open_settings_impl():
                 return
             for index in reversed(selection):
                 listbox.delete(index)
+                valuelist.pop(index)
         ttk.Button(
             listbox_frame,
             text="Add",
@@ -931,31 +1079,144 @@ def _open_settings_impl():
             command=remove_item
         ).pack(side="left")
 
-    def make_checkbox(tab: tk.Frame, column: int, row: int):
+    def make_checkbox(tab: tk.Frame, column: int, row: int, var: tk.BooleanVar):
         cbframe = tk.Frame(tab)
         cbframe.grid(column=column, row=row, sticky="ew")
-        ttk.Checkbutton(cbframe).pack(side="right")
+        ttk.Checkbutton(cbframe, variable=var).pack(side="right")
 
     input_base_frame.columnconfigure(0, weight=0)
     input_base_frame.columnconfigure(1, weight=1)
     input_base_frame.columnconfigure(2, weight=0)
+    print(f"{config['input']['activate']}")
+    SETTINGS_WINDOW.vars = {} # type: ignore
+    stored_vars: dict[str, tk.Variable | list[str]] = SETTINGS_WINDOW.vars # type: ignore
+    stored_vars["input:activate@key"] = tk.StringVar(value=config["input"]["activate"])
+    stored_vars["input:reject@key"] = tk.StringVar(value=config["input"]["reject"])
+    stored_vars["input:radio_modifier@key"] = tk.StringVar(value=config["input"]["radio_modifier"])
+    stored_vars["input:autosend@bool"] = tk.BooleanVar(value=config["input"]["autosend"])
+    stored_vars["input:activate_globally_blocked@bool"] = tk.BooleanVar(value=config["input"]["activate_globally_blocked"])
+    stored_vars["input:blocked_keys@list@string"] = config["input"]["blocked_keys"]
     ttk.Label(input_base_frame, text="Activate keybind  ").grid(column=0, row=0, sticky="ew")
-    ttk.Entry(input_base_frame).grid(column=2, row=0, sticky="ew")
+    ttk.Entry(input_base_frame, textvariable=stored_vars["input:activate@key"]).grid(column=2, row=0, sticky="ew")
     infobutton(input_base_frame, 3, 0, "Hold this button to record your voice.")
     ttk.Label(input_base_frame, text="Reject keybind  ").grid(column=0, row=1, sticky="ew")
-    ttk.Entry(input_base_frame).grid(column=2, row=1, sticky="ew")
+    ttk.Entry(input_base_frame, textvariable=stored_vars["input:reject@key"]).grid(column=2, row=1, sticky="ew")
     infobutton(input_base_frame, 3, 1, "Press this button at any time to cancel a message.")
     ttk.Label(input_base_frame, text="Radio keybind  ").grid(column=0, row=2, sticky="ew")
-    ttk.Entry(input_base_frame).grid(column=2, row=2, sticky="ew")
+    ttk.Entry(input_base_frame, textvariable=stored_vars["input:radio_modifier@key"]).grid(column=2, row=2, sticky="ew")
     infobutton(input_base_frame, 3, 2, "Press this button to toggle sending messages over the radio.")
     ttk.Label(input_base_frame, text="Autosend  ").grid(column=0, row=3, sticky="ew")
-    make_checkbox(input_base_frame, 2, 3)
+    make_checkbox(input_base_frame, 2, 3, stored_vars["input:autosend@bool"])
     infobutton(input_base_frame, 3, 3, "If this box is checked, your messages will automatically send once you let go of the activate keybind. If unchecked, you have to press the activate keybind a second time to send the message.")
     ttk.Label(input_base_frame, text="Activate globally blocked  ").grid(column=0, row=4, sticky="ew")
-    make_checkbox(input_base_frame, 2, 4)
+    make_checkbox(input_base_frame, 2, 4, stored_vars["input:activate_globally_blocked@bool"])
     infobutton(input_base_frame, 3, 4, "Should the activate keybind be blocked from the rest of your system? Usually this should be checked.")
-    add_listbox(input_base_frame, 5, "Blocked keys", "Keys that should be blocked while the submission process is ongoing. Typically these keys will be blocked for 10-100ms.")
+    add_listbox(input_base_frame, 5, "Blocked keys", "Keys that should be blocked while the submission process is ongoing. Typically these keys will be blocked for 10-100ms.", stored_vars["input:blocked_keys@list@string"])
+    
+    stored_vars["output:output_method@literal'hwnd|say|chat'"] = tk.StringVar(value=config["output"]["output_method"])
+    stored_vars["output:hwnd_settings:automation_id@int"] = tk.StringVar(value=str(config["output"]["hwnd_settings"]["automation_id"]))
+    stored_vars["output:hwnd_settings:show_speech_indicator@bool"] = tk.BooleanVar(value=config["output"]["hwnd_settings"]["show_speech_indicator"])
+    stored_vars["output:say_settings:delay_ms@float"] = tk.StringVar(value=str(config["output"]["say_settings"]["delay_ms"]))
+    stored_vars["output:chat_settings:chat_delay@float"] = tk.StringVar(value=str(config["output"]["chat_settings"]["chat_delay"]))
+    stored_vars["output:chat_settings:chat_key@key"] = tk.StringVar(value=config["output"]["chat_settings"]["chat_key"])
+    output_base_frame.columnconfigure(0, weight=0)
+    output_base_frame.columnconfigure(1, weight=1)
+    output_base_frame.columnconfigure(2, weight=0)
+    ttk.Label(output_base_frame, text="Output method  ").grid(column=0, row=0, sticky="ew")
+    combobox = ttk.Combobox(output_base_frame, values=("hwnd", "say", "chat"), textvariable=stored_vars["output:output_method@literal'hwnd|say|chat'"])
+    combobox.grid(column=2, row=0, sticky="ew")
+    combobox.state(["readonly"])
+    infobutton(output_base_frame, 3, 0, "HWND is the fastest. It uses the text entry panel using the command \"Say\". Say is less fast. It uses the same method as HWND, but it directly copies and pastes the transcript in instead of using windows functions to set the value exactly. Chat is the slowest. It uses the TGUI input dialogue to enter text.")
+    
+    ttk.Label(output_base_frame, text="HWND settings:", font=text_font).grid(column=0, row=1, sticky="ew")
+    ttk.Label(output_base_frame, text="  Automation id  ").grid(column=0, row=2, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:hwnd_settings:automation_id@int"]).grid(column=2, row=2, sticky="ew")
+    infobutton(output_base_frame, 3, 2, "The automation id of the chat bar. This is typically set for you, and doesn't need to be changed. See userconfig.toml for an explanation of how to find this.")
+    ttk.Label(output_base_frame, text="  Show typing indicator  ").grid(column=0, row=3, sticky="ew")
+    make_checkbox(output_base_frame, 2, 3, stored_vars["output:hwnd_settings:show_speech_indicator@bool"])
+    infobutton(output_base_frame, 3, 3, "Should a typing indicator be shown while you are speaking? This sets the chat bar to \"Say \"...\"\"")
 
+    ttk.Label(output_base_frame, text="Say settings:", font=text_font).grid(column=0, row=4, sticky="ew")
+    ttk.Label(output_base_frame, text="  Delay (ms)  ").grid(column=0, row=5, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:say_settings:delay_ms@float"]).grid(column=2, row=5, sticky="ew")
+    infobutton(output_base_frame, 3, 5, "The delay between focusing the chat bar and pasting in the transcript. Increase if you run into issues with dropped inputs.")
+    
+    ttk.Label(output_base_frame, text="Chat settings:", font=text_font).grid(column=0, row=6, sticky="ew")
+    ttk.Label(output_base_frame, text="  Delay (s)  ").grid(column=0, row=7, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_delay@float"]).grid(column=2, row=7, sticky="ew")
+    infobutton(output_base_frame, 3, 7, "The delay between opening the chat window and pasting in the transcript. Increase if you run into issues with dropped inputs.")
+    ttk.Label(output_base_frame, text="  Chat key  ").grid(column=0, row=8, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_key@key"]).grid(column=2, row=8, sticky="ew")
+    infobutton(output_base_frame, 3, 8, "The key that opens the TGUI chat window.")
+
+    stored_vars["meta:model@string"] = tk.StringVar(value=config["meta"]["model"])
+    stored_vars["meta:path_to_model@string"] = tk.StringVar(value=config["meta"]["path_to_model"])
+    stored_vars["meta:prompt@string"] = tk.StringVar(value=config["meta"]["prompt"])
+    stored_vars["meta:keywords@list@string"] = list(config["meta"]["keywords"])
+    stored_vars["meta:warn_on_cpu@bool"] = tk.BooleanVar(value=config["meta"]["warn_on_cpu"])
+    model_base_frame.columnconfigure(0, weight=0)
+    model_base_frame.columnconfigure(1, weight=1)
+    model_base_frame.columnconfigure(2, weight=0)
+    ttk.Label(model_base_frame, text="Model  ").grid(column=0, row=0, sticky="ew")
+    combobox = ttk.Combobox(model_base_frame, values=("none", "parakeet", "granite"), textvariable=stored_vars["meta:model@string"])
+    combobox.grid(column=2, row=0, sticky="ew")
+    infobutton(model_base_frame, 3, 0, "The ASR model to use for speech detection. Parakeet is the fastest, but doesn't support keyworking or prompting. Granite is much slower but supports more features. Alternatively, enter the path to a python file that defines and ASRModel class.")
+    ttk.Label(model_base_frame, text="Model path  ").grid(column=0, row=1, sticky="ew")
+    ttk.Entry(model_base_frame, textvariable=stored_vars["meta:path_to_model@string"]).grid(column=2, row=1, sticky="ew")
+    infobutton(model_base_frame, 3, 1, "The path that the loaded ASR models are stored in. These models are very large, so you might want to put them on another drive.")
+    ttk.Label(model_base_frame, text="Model prompt  ").grid(column=0, row=2, sticky="ew")
+    text_chars = 19
+    textedit = tk.Text(model_base_frame)
+    textedit.config(width=text_chars)
+    textedit.grid(column=2, row=2, sticky="ew")
+    def textedit_resize(event=None):
+        text = textedit.get("1.0", "end-1c")
+        lines = text.split("\n")
+        height = max(1, len(lines))
+        for line in lines:
+            height = height + math.floor(len(line) / text_chars)
+        textedit.configure(height=height)
+        stored_vars["meta:prompt@string"].set(text) # type: ignore
+    textedit.bind("<KeyRelease>", textedit_resize)
+    textedit_resize()
+    infobutton(model_base_frame, 3, 2, "The prompt given to the ASR model. Currently, this is only supported on Granite. Access the prompt within shared.ModelLoadingState.prompt")
+    add_listbox(model_base_frame, 3, "Keywords", "Keywords that the ASR model should target. Put any words that STT consistently gets wrong here. Currently only supported on Granite. Access within shared.ModelLoadingState.keywords", stored_vars["meta:keywords@list@string"])
+    ttk.Label(model_base_frame, text="  Warn on CPU  ").grid(column=0, row=4, sticky="ew")
+    make_checkbox(model_base_frame, 2, 4, stored_vars["meta:warn_on_cpu@bool"])
+    infobutton(model_base_frame, 3, 4, "Should STT warn you if the ASR model is loaded to your CPU? Note that CPU inference is much slower than GPU inferance.")
+
+    stored_vars["meta:enable_version_checking@bool"] = tk.BooleanVar(value=config["meta"]["enable_version_checking"])
+    stored_vars["meta:do_loudness_normalization@bool"] = tk.BooleanVar(value=config["meta"]["do_loudness_normalization"])
+    stored_vars["meta:verbose@bool"] = tk.BooleanVar(value=config["meta"]["verbose"])
+    stored_vars["meta:window_width@int"] = tk.StringVar(value=str(config["meta"]["window_width"]))
+    stored_vars["meta:window_height@int"] = tk.StringVar(value=str(config["meta"]["window_height"]))
+    stored_vars["meta:minimum_utterance_detection_length@float"] = tk.StringVar(value=str(config["meta"]["minimum_utterance_detection_length"]))
+    stored_vars["meta:minimum_utterance_audio_length@float"] = tk.StringVar(value=str(config["meta"]["minimum_utterance_audio_length"]))
+    advanced_base_frame.columnconfigure(0, weight=0)
+    advanced_base_frame.columnconfigure(1, weight=1)
+    advanced_base_frame.columnconfigure(2, weight=0)
+    ttk.Label(advanced_base_frame, text="Version checking  ").grid(column=0, row=0, sticky="ew")
+    make_checkbox(advanced_base_frame, 2, 0, stored_vars["meta:enable_version_checking@bool"])
+    infobutton(advanced_base_frame, 3, 0, "Should STT check for new versions on startup?")
+    ttk.Label(advanced_base_frame, text="Loudness normalization  ").grid(column=0, row=1, sticky="ew")
+    make_checkbox(advanced_base_frame, 2, 1, stored_vars["meta:do_loudness_normalization@bool"])
+    infobutton(advanced_base_frame, 3, 1, "Should recorded audio be normalized? Disable if you get strange ASR performance.")
+    ttk.Label(advanced_base_frame, text="Verbose  ").grid(column=0, row=2, sticky="ew")
+    make_checkbox(advanced_base_frame, 2, 2, stored_vars["meta:verbose@bool"])
+    infobutton(advanced_base_frame, 3, 2, "Enable more diagnostics.")
+    ttk.Label(advanced_base_frame, text="Window width  ").grid(column=0, row=3, sticky="ew")
+    ttk.Entry(advanced_base_frame, textvariable=stored_vars["meta:window_width@int"]).grid(column=2, row=3, sticky="ew")
+    infobutton(advanced_base_frame, 3, 3, "The width of the window.")
+    ttk.Label(advanced_base_frame, text="Window height  ").grid(column=0, row=4, sticky="ew")
+    ttk.Entry(advanced_base_frame, textvariable=stored_vars["meta:window_height@int"]).grid(column=2, row=4, sticky="ew")
+    infobutton(advanced_base_frame, 3, 4, "The height of the window.")
+    lblwrap(ttk.Label(advanced_base_frame, text="Minimum audio length for detection (ms)  ")).grid(column=0, row=5, sticky="ew")
+    ttk.Entry(advanced_base_frame, textvariable=stored_vars["meta:minimum_utterance_detection_length@float"]).grid(column=2, row=5, sticky="ew")
+    infobutton(advanced_base_frame, 3, 5, "The minimum length of time the record button must be pressed. If pressed for a shorter amount of time, the transcript is discarded.")
+    lblwrap(ttk.Label(advanced_base_frame, text="Minimum audio length for padding (ms)  ")).grid(column=0, row=6, sticky="ew")
+    ttk.Entry(advanced_base_frame, textvariable=stored_vars["meta:minimum_utterance_audio_length@float"]).grid(column=2, row=6, sticky="ew")
+    infobutton(advanced_base_frame, 3, 6, "The minimum length of the audio file. It will be padded to be at least this length.")
+    
 def open_settings():
     global SETTINGS_WINDOW
     if INIT_STATE == InitState.PRESETTINGS or INIT_STATE == InitState.PREINIT:
