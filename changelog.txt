@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
 Version: 1.0.0
-Date: 2026-6-21
+Date: 2026-6-22
   Name:
     - Release 1.0
   Headline:
@@ -13,6 +13,7 @@ Date: 2026-6-21
     - Adds filter arguments and filter load hooks
     - Adds a Qwen2.5-1.5B LLM postprocessing filter
     - Adds priority to filters
+    - Adds a GUI for basic config
   Changes:
     - Models are stored as python files that are loaded based on the config options
     - Plugins can have on_load functions for load-time initialization
