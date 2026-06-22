@@ -38,6 +38,7 @@ try:
     from shared import spawn_thread, report_exception
     print("Importing gui...")
     import tkinter as tk
+    import tkinter.filedialog
     from tkinter import messagebox
     import tkinter.ttk as ttk
 except ImportError as e:
@@ -131,6 +132,13 @@ V = typing.TypeVar('V')
 def settingsbutton_command():
     spawn_thread(open_settings)
 
+def PHOTOIMAGE(file: str) -> tk.PhotoImage:
+    try:
+        return tk.PhotoImage(file=file)
+    except Exception as e:
+        messagebox.showerror("Couldn't load STT", f"Couldn't load data/gear.png: ({type(e).__name__}) {e}")
+        sys.exit(1)
+
 root = tk.Tk()
 root.config(bg="white")
 root.title("Speech To Text")
@@ -139,11 +147,7 @@ root.minsize(shared.DEFAULT_WINDOW_WIDTH, shared.DEFAULT_WINDOW_HEIGHT)
 label_frame = tk.Frame(root, width = shared.DEFAULT_WINDOW_WIDTH, height = shared.DEFAULT_WINDOW_HEIGHT, bg="white")
 label_frame.pack_propagate(False)
 label_frame.pack(padx=0, pady=0)
-try:
-    settings_icon = tk.PhotoImage(file="data/gear.png").subsample(2, 2)
-except Exception as e:
-    messagebox.showerror("Couldn't load STT", f"Couldn't load data/gear.png: ({type(e).__name__}) {e}")
-    sys.exit(1)
+settings_icon = PHOTOIMAGE("data/gear.png").subsample(2, 2)
 settings_button = tk.Button(label_frame, image=settings_icon, relief="flat", bg="white", command=settingsbutton_command)
 settings_button.place(x=5, y=5)
 label = tk.Label(label_frame, text="Pre-Init", bg="white", justify="center", font=("Arial", 12))
@@ -839,8 +843,125 @@ allow_cpu_asr = True
 chat_delay = 0
 chat_key = ""
 
+SETTINGS_WINDOW: tk.Toplevel | None = None
+
+def lblwrap(label: ttk.Label) -> ttk.Label:
+    def on_resize(event):
+        event.widget.config(wraplength=event.widget.winfo_width())
+    label.bind("<Configure>", on_resize)
+    return label
+
+QUESTION_ICON = PHOTOIMAGE("data/question_button.png").subsample(2, 2)
+
+@main_thread
+def _open_settings_impl():
+    global SETTINGS_WINDOW
+    if SETTINGS_WINDOW is not None:
+        raise RuntimeError("_open_settings_impl called while SETTINGS_WINDOW is not None")
+    SETTINGS_WINDOW = tk.Toplevel(master=root)
+    SETTINGS_WINDOW.title("Settings")
+    SETTINGS_WINDOW.geometry("600x500")
+
+    with open(shared.CONFIG_FILENAME, "r") as f:
+        config = tomlkit.load(f)
+
+    notebook = ttk.Notebook(SETTINGS_WINDOW)
+    notebook.pack(fill="both", expand=True)
+
+    onboarding_tab = ttk.Frame(notebook)
+    input_tab = ttk.Frame(notebook)
+    output_tab = ttk.Frame(notebook)
+    model_tab = ttk.Frame(notebook)
+    advanced_tab = ttk.Frame(notebook)
+
+    notebook.add(onboarding_tab, text="Onboarding")
+    notebook.add(input_tab, text="Input")
+    notebook.add(output_tab, text="Output")
+    notebook.add(model_tab, text="Model")
+    notebook.add(advanced_tab, text="Advanced")
+
+    onboarding_tab.columnconfigure(0, weight=1)
+    header_font = ("TkDefaultFont", 14)
+    text_font = ("TkDefaultFont", 10)
+    ttk.Label(onboarding_tab, text="Welcome to Speech To Text!", font=("TkDefaultFont", 20, "bold")).grid(column=0, row=0, sticky="new")
+    ttk.Label(onboarding_tab, text="How do I use STT?", font=header_font).grid(column=0, row=1, sticky="new")
+    lblwrap(ttk.Label(onboarding_tab, text="It's simple! Hold down the activate keybind (defaults to mousebutton4) to record your voice, and release it to send it in game!", font=text_font)).grid(column=0, row=2, sticky="new")
+    onboarding_tab.rowconfigure(3, weight=1)
+    tk.Frame(onboarding_tab).grid(column=0, row=3)
+
+    input_base_frame = tk.Frame(input_tab)
+    input_base_frame.pack(fill="both", expand=True)
+    tk.Button(input_tab, text="Apply", font=header_font).pack(side="left", padx=10, pady=10)
+    tk.Button(input_tab, text="Discard", font=header_font).pack(side="left", padx=10, pady=10)
+    def _create_infobutton(tab: tk.Widget, text: str) -> tk.Button:
+        return tk.Button(tab, image=QUESTION_ICON, relief="flat", bg="white", command=lambda: spawn_thread(lambda: messagebox.showinfo("Info", text)))
+
+    def infobutton(tab: tk.Frame, column: int, row: int, text: str):
+        _create_infobutton(tab, text).grid(column=column, row=row, sticky="ew")
+
+    def add_listbox(tab: tk.Frame, row: int, name: str, info: str):
+        ttk.Label(tab, text=f"{name}  ").grid(column=0, row=row, sticky="nw")
+        _create_infobutton(tab, info).grid(column=3, row=row, sticky="n")
+        listbox_frame = ttk.Frame(tab)
+        listbox_frame.grid(column=2, row=row, sticky="nsew")
+        listbox = tk.Listbox(listbox_frame)
+        listbox.pack(side="top", fill="both", expand=True)
+        entry = ttk.Entry(listbox_frame)
+        entry.pack(fill="x")
+        def add_item():
+            text = entry.get().strip()
+            if not text:
+                return
+            listbox.insert(tk.END, text)
+            entry.delete(0, tk.END)
+        def remove_item():
+            selection = listbox.curselection()
+            if not selection:
+                return
+            for index in reversed(selection):
+                listbox.delete(index)
+        ttk.Button(
+            listbox_frame,
+            text="Add",
+            command=add_item
+        ).pack(side="left")
+        ttk.Button(
+            listbox_frame,
+            text="Remove",
+            command=remove_item
+        ).pack(side="left")
+
+    def make_checkbox(tab: tk.Frame, column: int, row: int):
+        cbframe = tk.Frame(tab)
+        cbframe.grid(column=column, row=row, sticky="ew")
+        ttk.Checkbutton(cbframe).pack(side="right")
+
+    input_base_frame.columnconfigure(0, weight=0)
+    input_base_frame.columnconfigure(1, weight=1)
+    input_base_frame.columnconfigure(2, weight=0)
+    ttk.Label(input_base_frame, text="Activate keybind  ").grid(column=0, row=0, sticky="ew")
+    ttk.Entry(input_base_frame).grid(column=2, row=0, sticky="ew")
+    infobutton(input_base_frame, 3, 0, "Hold this button to record your voice.")
+    ttk.Label(input_base_frame, text="Reject keybind  ").grid(column=0, row=1, sticky="ew")
+    ttk.Entry(input_base_frame).grid(column=2, row=1, sticky="ew")
+    infobutton(input_base_frame, 3, 1, "Press this button at any time to cancel a message.")
+    ttk.Label(input_base_frame, text="Radio keybind  ").grid(column=0, row=2, sticky="ew")
+    ttk.Entry(input_base_frame).grid(column=2, row=2, sticky="ew")
+    infobutton(input_base_frame, 3, 2, "Press this button to toggle sending messages over the radio.")
+    ttk.Label(input_base_frame, text="Autosend  ").grid(column=0, row=3, sticky="ew")
+    make_checkbox(input_base_frame, 2, 3)
+    infobutton(input_base_frame, 3, 3, "If this box is checked, your messages will automatically send once you let go of the activate keybind. If unchecked, you have to press the activate keybind a second time to send the message.")
+    ttk.Label(input_base_frame, text="Activate globally blocked  ").grid(column=0, row=4, sticky="ew")
+    make_checkbox(input_base_frame, 2, 4)
+    infobutton(input_base_frame, 3, 4, "Should the activate keybind be blocked from the rest of your system? Usually this should be checked.")
+    add_listbox(input_base_frame, 5, "Blocked keys", "Keys that should be blocked while the submission process is ongoing. Typically these keys will be blocked for 10-100ms.")
+
 def open_settings():
-    pass
+    global SETTINGS_WINDOW
+    if INIT_STATE == InitState.PRESETTINGS or INIT_STATE == InitState.PREINIT:
+        return
+    if SETTINGS_WINDOW is None:
+        _open_settings_impl()
 
 def is_key(value: str) -> bool:
     special_keys = [k.name for k in pynput.keyboard.Key]
