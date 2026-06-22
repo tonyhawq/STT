@@ -1001,9 +1001,14 @@ def _open_settings_impl():
         scrollable_frame = tk.Frame(tab)
         window_id = tab.create_window((0, 0), window=scrollable_frame, anchor="nw")
         tab.bind("<Configure>", lambda e: tab.itemconfigure(window_id, width=e.width))
+        def _scroll(e):
+            first, last = tab.yview()
+            if first == 0.0 and last == 1.0:
+                return
+            tab.yview_scroll(int(-e.delta / 120), "units")
         scrollable_frame.bind("<Configure>", lambda e: tab.configure(scrollregion=tab.bbox("all")))
         def _bind_mousewheel(event):
-            tab.bind_all("<MouseWheel>", lambda e: tab.yview_scroll(int(-e.delta / 120), "units"))
+            tab.bind_all("<MouseWheel>", _scroll)
         def _unbind_mousewheel(event):
             tab.unbind_all("<MouseWheel>")
 
