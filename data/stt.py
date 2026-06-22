@@ -992,17 +992,42 @@ def _open_settings_impl():
     notebook = ttk.Notebook(SETTINGS_WINDOW)
     notebook.pack(fill="both", expand=True)
 
-    onboarding_tab = ttk.Frame(notebook)
-    input_tab = ttk.Frame(notebook)
-    output_tab = ttk.Frame(notebook)
-    model_tab = ttk.Frame(notebook)
-    advanced_tab = ttk.Frame(notebook)
+    def make_tab_from_raw(rawtab: ttk.Frame) -> tk.Frame:
+        tab = tk.Canvas(rawtab)
+        tab.pack(side="left", fill="both", expand=True)
+        scrollbar = tk.Scrollbar(rawtab, orient="vertical", command=tab.yview)
+        scrollbar.pack(side="right", fill="y")
+        tab.configure(yscrollcommand=scrollbar.set)
+        scrollable_frame = tk.Frame(tab)
+        window_id = tab.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        tab.bind("<Configure>", lambda e: tab.itemconfigure(window_id, width=e.width))
+        scrollable_frame.bind("<Configure>", lambda e: tab.configure(scrollregion=tab.bbox("all")))
+        def _bind_mousewheel(event):
+            tab.bind_all("<MouseWheel>", lambda e: tab.yview_scroll(int(-e.delta / 120), "units"))
+        def _unbind_mousewheel(event):
+            tab.unbind_all("<MouseWheel>")
 
-    notebook.add(onboarding_tab, text="Onboarding")
-    notebook.add(input_tab, text="Input")
-    notebook.add(output_tab, text="Output")
-    notebook.add(model_tab, text="Model")
-    notebook.add(advanced_tab, text="Advanced")
+        scrollable_frame.bind("<Enter>", _bind_mousewheel)
+        scrollable_frame.bind("<Leave>", _unbind_mousewheel)
+        return scrollable_frame
+
+    onboarding_rawtab = ttk.Frame(notebook)
+    input_rawtab = ttk.Frame(notebook)
+    output_rawtab = ttk.Frame(notebook)
+    model_rawtab = ttk.Frame(notebook)
+    advanced_rawtab = ttk.Frame(notebook)
+
+    onboarding_tab = make_tab_from_raw(onboarding_rawtab)
+    input_tab = make_tab_from_raw(input_rawtab)
+    output_tab = make_tab_from_raw(output_rawtab)
+    model_tab = make_tab_from_raw(model_rawtab)
+    advanced_tab = make_tab_from_raw(advanced_rawtab)
+
+    notebook.add(onboarding_rawtab, text="Onboarding")
+    notebook.add(input_rawtab, text="Input")
+    notebook.add(output_rawtab, text="Output")
+    notebook.add(model_rawtab, text="Model")
+    notebook.add(advanced_rawtab, text="Advanced")
 
     onboarding_tab.columnconfigure(0, weight=1)
     header_font = ("TkDefaultFont", 14)
@@ -1010,10 +1035,14 @@ def _open_settings_impl():
     ttk.Label(onboarding_tab, text="Welcome to Speech To Text!", font=("TkDefaultFont", 20, "bold")).grid(column=0, row=0, sticky="new")
     ttk.Label(onboarding_tab, text="How do I use STT?", font=header_font).grid(column=0, row=1, sticky="new")
     lblwrap(ttk.Label(onboarding_tab, text="It's simple! Hold down the activate keybind (defaults to mousebutton4) to record your voice, and release it to send it in game!", font=text_font)).grid(column=0, row=2, sticky="new")
-    onboarding_tab.rowconfigure(3, weight=1)
-    tk.Frame(onboarding_tab).grid(column=0, row=3)
+    ttk.Label(onboarding_tab, text="What's a filter?", font=header_font).grid(column=0, row=3, sticky="new")
+    lblwrap(ttk.Label(onboarding_tab, text=f"Filters can change your text after you've said it. STT comes with a bunch of filters, especially for departmental radios! Just open {shared.FILTERCONFIG_FILENAME} and set some keybinds, or create your own filters.", font=text_font)).grid(column=0, row=4, sticky="new")
+    ttk.Label(onboarding_tab, text="What if I mess all my settings up?", font=header_font).grid(column=0, row=5, sticky="new")
+    lblwrap(ttk.Label(onboarding_tab, text=f"Just delete {shared.CONFIG_FILENAME} and relaunch STT!", font=text_font)).grid(column=0, row=6, sticky="new")
+    onboarding_tab.rowconfigure(7, weight=1)
+    tk.Frame(onboarding_tab).grid(column=0, row=7)
 
-    def add_buttons(tab: ttk.Frame) -> tk.Frame:
+    def add_buttons(tab: tk.Frame) -> tk.Frame:
         base_frame = tk.Frame(tab)
         base_frame.pack(fill="both", expand=True)
         def apply_cmd():
