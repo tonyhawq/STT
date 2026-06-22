@@ -11,7 +11,6 @@ try:
     import wave
     import tomllib
     import tomlkit
-    import tomlkit.items
     import typing
     import pyperclip
     import keyboard
@@ -149,10 +148,10 @@ label_frame = tk.Frame(root, width = shared.DEFAULT_WINDOW_WIDTH, height = share
 label_frame.pack_propagate(False)
 label_frame.pack(padx=0, pady=0)
 settings_icon = PHOTOIMAGE("data/gear.png").subsample(2, 2)
-settings_button = tk.Button(label_frame, image=settings_icon, relief="flat", bg="white", command=settingsbutton_command)
-settings_button.place(x=5, y=5)
 label = tk.Label(label_frame, text="Pre-Init", bg="white", justify="center", font=("Arial", 12))
 label.pack(expand=True)
+settings_button = tk.Button(label_frame, image=settings_icon, borderwidth=0, highlightthickness=0, bd=0, relief="flat", bg="white", command=settingsbutton_command)
+settings_button.place(x=5, y=5)
 
 _registered_tk_hooks: dict[str, list[typing.Callable]] = {}
 
@@ -928,12 +927,16 @@ def _open_settings_impl():
                 raise TypeError(f"Unknown typestr {typestr}")
         vars: dict[str, tk.Variable | list[tk.StringVar]] = SETTINGS_WINDOW.vars # type: ignore
         for typ, var in vars.items():
+            typ = typing.cast(str, typ)
             path = typ.split(":")
             file = path[-1].split("@", 1)
             extension = file[-1]
             file = file[0]
             path = path[:-1]
-            print(f"Saving value {':'.join(path)}:{file} (of type {extension})")
+            varstr = str(var)
+            if isinstance(var, tk.Variable):
+                varstr = str(var.get())
+            print(f"Saving value {':'.join(path)}:{file} (of type {extension}) => {varstr} (path {'/'.join(path)} file {file})")
             try:
                 if isinstance(var, list):
                     value = convert_type(var, extension)
@@ -943,15 +946,23 @@ def _open_settings_impl():
                 raise TypeError(f"Saving \"{file}\" (in {path[0]}) which is a/n {extension}: {e}")
             current_step = config
             for next_step in path:
-                current_step = current_step[next_step]
-            current_step = value
+                try:
+                    current_step = current_step[next_step]
+                except Exception as e:
+                    print(f"Encountered exception while traversing path {path} at step {next_step}: ({type(e).__name__}) {e}\n  CONFIG STATE: {config}\n  CURRENT STEP: {current_step}")
+                    raise
+            current_step[file] = value
     
     def save_to_file():
+        print("-- Saving to config memory")
         save_to_cfgmem()
+        print("-- Finished saving to config memory")
         with open(shared.CONFIG_FILENAME, "w") as f:
             f.write(tomlkit.dumps(config))
+        print("-- Finished saving to file")
 
     def window_close_hook():
+        global SETTINGS_WINDOW
         if SETTINGS_WINDOW is None:
             raise RuntimeError("SETTINGS_WINDOW is None on window_close_hook")
         with open(shared.CONFIG_FILENAME, "r") as f:
@@ -960,6 +971,7 @@ def _open_settings_impl():
             save_to_cfgmem()
             if unmodified == config:
                 SETTINGS_WINDOW.destroy()
+                SETTINGS_WINDOW = None
                 return
         except:
             pass
@@ -973,6 +985,7 @@ def _open_settings_impl():
                 spawn_thread(reraise)
                 return
         SETTINGS_WINDOW.destroy()
+        SETTINGS_WINDOW = None
         
     SETTINGS_WINDOW.protocol("WM_DELETE_WINDOW", window_close_hook)
 
@@ -1012,7 +1025,8 @@ def _open_settings_impl():
                     try:
                         save_to_file()
                     except TypeError as e:
-                        messagebox.showerror("Couldn't save", f"Couldn't save the config. {e}")
+                        shared.record_exception(e)
+                        messagebox.showerror("Couldn't save", f"Couldn't save the config. ({type(e).__name__}) {e}")
                     finished.set()
                 except:
                     raise
@@ -1169,6 +1183,7 @@ def _open_settings_impl():
     textedit = tk.Text(model_base_frame)
     textedit.config(width=text_chars)
     textedit.grid(column=2, row=2, sticky="ew")
+    textedit.insert(tk.END, stored_vars["meta:prompt@string"].get())  
     def textedit_resize(event=None):
         text = textedit.get("1.0", "end-1c")
         lines = text.split("\n")
@@ -1918,6 +1933,20 @@ class InitState(Enum):
     PREFILTERLOADING = 4
     POSTFILTERLOADING = 5
     FINISHED = 5
+
+    def as_human_readable_string(self):
+        if self == InitState.INIT_CANCELLED:
+            return "cancelled"
+        elif self == InitState.PREINIT:
+            return "pre-init"
+        elif self == InitState.PRESETTINGS:
+            return "config loading"
+        elif self == InitState.PREMODELLOADING:
+            return "model loading"
+        elif self == InitState.PREFILTERLOADING:
+            return "filter loading"
+        elif self == InitState.FINISHED:
+            return "finished"
 
 INIT_STATE = InitState.PREINIT
 _init_state_changed = threading.Event()
@@ -2957,7 +2986,7 @@ def init():
     set_INIT_STATE(InitState.PRESETTINGS)
     def on_exception(e: Exception, context: str | None = None):
         shared.record_exception(e, context)
-        giveup_init(f"Encountered an exception: ({type(e).__name__}) {e}")
+        giveup_init(f"Encountered an exception in stage {InitState(INIT_STATE).as_human_readable_string()}: ({type(e).__name__}) {e}")
         loading_finished.set()
     shared.add_exception_hook("model_loading", on_exception)
     startup_time = shared.Timer()
@@ -3058,6 +3087,10 @@ def bootstrap():
     if EARLY_GIVEUP_INIT:
         print(f"Initialization was cancelled due to {INIT_GIVEUP_REASON}")
         set_INIT_STATE(InitState.INIT_CANCELLED)
+        @main_thread
+        def _geometry():
+            root.geometry(f"{max(300, shared.DEFAULT_WINDOW_WIDTH)}x{max(600, shared.DEFAULT_WINDOW_HEIGHT)}")
+        _geometry()
         tk_config(label, text=f"Init cancelled:\n{INIT_GIVEUP_REASON}")
 
 root.after(0, spawn_thread, bootstrap)
