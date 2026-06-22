@@ -1011,7 +1011,6 @@ def _open_settings_impl():
             tab.bind_all("<MouseWheel>", _scroll)
         def _unbind_mousewheel(event):
             tab.unbind_all("<MouseWheel>")
-
         scrollable_frame.bind("<Enter>", _bind_mousewheel)
         scrollable_frame.bind("<Leave>", _unbind_mousewheel)
         return scrollable_frame
@@ -1034,6 +1033,10 @@ def _open_settings_impl():
     notebook.add(model_rawtab, text="Model")
     notebook.add(advanced_rawtab, text="Advanced")
 
+    def expanding_frame(tab: tk.Frame, row: int):
+        tab.rowconfigure(row, weight=1)
+        tk.Frame(tab).grid(column=0, row=row)
+
     onboarding_tab.columnconfigure(0, weight=1)
     header_font = ("TkDefaultFont", 14)
     text_font = ("TkDefaultFont", 10)
@@ -1044,8 +1047,7 @@ def _open_settings_impl():
     lblwrap(ttk.Label(onboarding_tab, text=f"Filters can change your text after you've said it. STT comes with a bunch of filters, especially for departmental radios! Just open {shared.FILTERCONFIG_FILENAME} and set some keybinds, or create your own filters.", font=text_font)).grid(column=0, row=4, sticky="new")
     ttk.Label(onboarding_tab, text="What if I mess all my settings up?", font=header_font).grid(column=0, row=5, sticky="new")
     lblwrap(ttk.Label(onboarding_tab, text=f"Just delete {shared.CONFIG_FILENAME} and relaunch STT!", font=text_font)).grid(column=0, row=6, sticky="new")
-    onboarding_tab.rowconfigure(7, weight=1)
-    tk.Frame(onboarding_tab).grid(column=0, row=7)
+    expanding_frame(onboarding_tab, row=7)
 
     def add_buttons(tab: tk.Frame) -> tk.Frame:
         base_frame = tk.Frame(tab)
@@ -1160,7 +1162,8 @@ def _open_settings_impl():
     make_checkbox(input_base_frame, 2, 4, stored_vars["input:activate_globally_blocked@bool"])
     infobutton(input_base_frame, 3, 4, "Should the activate keybind be blocked from the rest of your system? Usually this should be checked.")
     add_listbox(input_base_frame, 5, "Blocked keys", "Keys that should be blocked while the submission process is ongoing. Typically these keys will be blocked for 10-100ms.", stored_vars["input:blocked_keys@list@string"])
-    
+    expanding_frame(input_base_frame, row=6)
+
     stored_vars["output:output_method@literal'hwnd|say|chat'"] = tk.StringVar(value=config["output"]["output_method"])
     stored_vars["output:hwnd_settings:automation_id@int"] = tk.StringVar(value=str(config["output"]["hwnd_settings"]["automation_id"]))
     stored_vars["output:hwnd_settings:show_speech_indicator@bool"] = tk.BooleanVar(value=config["output"]["hwnd_settings"]["show_speech_indicator"])
@@ -1196,6 +1199,7 @@ def _open_settings_impl():
     ttk.Label(output_base_frame, text="  Chat key  ").grid(column=0, row=8, sticky="ew")
     ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_key@key"]).grid(column=2, row=8, sticky="ew")
     infobutton(output_base_frame, 3, 8, "The key that opens the TGUI chat window.")
+    expanding_frame(output_base_frame, row=9)
 
     stored_vars["meta:model@string"] = tk.StringVar(value=config["meta"]["model"])
     stored_vars["meta:path_to_model@string"] = tk.StringVar(value=config["meta"]["path_to_model"])
@@ -1233,6 +1237,7 @@ def _open_settings_impl():
     ttk.Label(model_base_frame, text="  Warn on CPU  ").grid(column=0, row=4, sticky="ew")
     make_checkbox(model_base_frame, 2, 4, stored_vars["meta:warn_on_cpu@bool"])
     infobutton(model_base_frame, 3, 4, "Should STT warn you if the ASR model is loaded to your CPU? Note that CPU inference is much slower than GPU inferance.")
+    expanding_frame(model_base_frame, row=5)
 
     stored_vars["meta:enable_version_checking@bool"] = tk.BooleanVar(value=config["meta"]["enable_version_checking"])
     stored_vars["meta:do_loudness_normalization@bool"] = tk.BooleanVar(value=config["meta"]["do_loudness_normalization"])
@@ -1265,7 +1270,8 @@ def _open_settings_impl():
     lblwrap(ttk.Label(advanced_base_frame, text="Minimum audio length for padding (ms)  ")).grid(column=0, row=6, sticky="ew")
     ttk.Entry(advanced_base_frame, textvariable=stored_vars["meta:minimum_utterance_audio_length@float"]).grid(column=2, row=6, sticky="ew")
     infobutton(advanced_base_frame, 3, 6, "The minimum length of the audio file. It will be padded to be at least this length.")
-    
+    expanding_frame(advanced_base_frame, row=7)
+
 def open_settings():
     global SETTINGS_WINDOW
     if INIT_STATE == InitState.PRESETTINGS or INIT_STATE == InitState.PREINIT:
