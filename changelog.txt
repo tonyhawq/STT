@@ -6,7 +6,7 @@ Date: 2026-6-22
   Headline:
     - First Release!
   Features:
-    - Adds installer.py which manages installation after python is installed and the venv exists
+    - Adds installer.py which manages installation after python is verified to exist and the venv is created
     - Adds a chat submission option that directly sets the value of the input box
     - Adds a loading bar to the changelog loading window
     - Adds Granite-Speech to the supported ASR models
@@ -14,6 +14,8 @@ Date: 2026-6-22
     - Adds a Qwen2.5-1.5B LLM postprocessing filter
     - Adds priority to filters
     - Adds a GUI for basic config
+    - Adds an embedded python runtime (replaces the installer with a full runtime)
+    - Adds onboarding text on first launch
   Changes:
     - Models are stored as python files that are loaded based on the config options
     - Plugins can have on_load functions for load-time initialization

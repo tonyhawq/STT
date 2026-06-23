@@ -37,6 +37,10 @@ if __name__ == "__main__":
         print("Installing dependencies...")
         PIP_PROCESS = subprocess.Popen("venv\\Scripts\\python.exe -m pip install -r requirements.txt --progress-bar=on")
         FINISH_RETURN_CODE = PIP_PROCESS.wait()
+        if FINISH_RETURN_CODE != 0:
+            messagebox.showerror("An error occurred", "An error occurred while downloading dependencies.")
+        else:
+            messagebox.showinfo("Installation complete", "The installation finished successfully! To use speech to text, just doubleclick run.bat!")
         IS_DONE_INSTALLING = True
         root.quit()
     threading.Thread(target = do_install, daemon=True).start()

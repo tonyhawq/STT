@@ -4,36 +4,58 @@ echo ------------------------------------------------------
 echo %ESC%[5;93mThis script will freeze while uninstalling setuptools!%ESC%[0m
 echo ------------------------------------------------------
 
-python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Python not found.
-    SETLOCAL ENABLEDELAYEDEXPANSION
-    set /p install_choice="Do you want to run the built-in python installer? (Y/N)"
-    if /i !install_choice! == "Y" (
-        echo Installing python...
-        start /wait "" "%~dp0\embedded\python-3.11.9-amd64.exe" /quiet InstallAllUsers=1 PrependPath=1
+if exist runtime\python.exe (
+    echo Using bundled Python runtime.
+    set PYTHON_EXE=runtime\python.exe
+) else (
+    setlocal EnableDelayedExpansion
+    echo.
+    echo %ESC%[91m======================================================%ESC%[0m
+    echo %ESC%[91mWARNING: Bundled Python runtime not found.%ESC%[0m
+    echo %ESC%[91mDid you download the wrong file?%ESC%[0m
+    echo %ESC%[91mSTT_NO_RUNTIME doesn't include python by default.%ESC%[0m
+    echo %ESC%[91mUsing a system Python may cause compatibility issues.%ESC%[0m
+    echo %ESC%[91mOnly continue if you know what you're doing.%ESC%[0m
+    echo %ESC%[91mPython 3.11 is required.%ESC%[0m
+    echo %ESC%[91m======================================================%ESC%[0m
+    echo.
+
+    set /p USE_SYSTEM_PYTHON="Use installed Python instead? (Y/N): "
+
+    IF /I "!USE_SYSTEM_PYTHON!"=="Y" (
+        echo Using system python.
     ) ELSE (
-        echo Install python 3.11 from https://www.python.org/downloads/release/python-3119/.
-        echo Make sure to add python to PATH and disable path length limits.
+        echo Exiting setup.
         pause
         exit /b 1
     )
+
+    python --version >nul 2>&1
+    if errorlevel 1 (
+        echo No Python installation found.
+        pause
+        exit /b 1
+    )
+
+    python -c "import sys; exit(0) if sys.version_info[:2] == (3,11) else exit(1)"
+    if errorlevel 1 (
+        echo Python 3.11 is required.
+        python --version
+        pause
+        exit /b 1
+    )
+
+    set PYTHON_EXE=python
 )
 
-python -c "import sys; exit(0) if sys.version_info.major == 3 and sys.version_info.minor == 11 else exit(1)"
-if %errorlevel% neq 0 (
-    echo Python 3.11 is required. Current python version is
-    python --version
-    pause
-    exit /b 1
-)
+echo Using %PYTHON_EXE%
 
 echo[
 if exist venv (
     echo Skipping virtual environment creation...
 ) ELSE (
     echo Creating virtual environment...
-    python -m venv venv
+    %PYTHON_EXE% -m venv venv
     powershell -NoProfile -Command ^ "$h=[Console]::OpenStandardOutput();"
 )
 echo Installing deps...

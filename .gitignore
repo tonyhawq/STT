@@ -21,3 +21,5 @@ data/model/*
 data/logs/*
 config/userconfig.toml
 config/filters.toml
+runtime
+last_version.number

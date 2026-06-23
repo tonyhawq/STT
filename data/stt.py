@@ -1,5 +1,7 @@
 import sys
 print(sys.path)
+print(sys.executable)
+print(sys.version_info)
 print("Starting...")
 try:
     print("Importing utilities...")
@@ -1315,27 +1317,38 @@ def is_mousebutton(value: str) -> bool:
 def is_input(value: str) -> bool:
     return is_key(value) or is_mousebutton(value)
 
-def fix_version_file():
+@shared.diagnose_entry
+def fix_version_file(filename: str):
     version = "0.0.0"
-    if not os.path.exists("version.number"):
-        with open("version.number", "w") as file:
+    if not os.path.exists(filename):
+        with open(filename, "w") as file:
             file.write(version)
         return
-    with open("version.number", "r") as file:
+    with open(filename, "r") as file:
         version = file.read(-1).strip()
     if bool(re.fullmatch(r'^\d+\.\d+\.\d+$', version)):
         # valid
         return
     spawn_thread(messagebox.showwarning, "STT Version File Error", message=f"An invalid version was detected inside of the version file, expected x.x.x, got \"{version}\"")
-    os.remove("version.number")
-    return fix_version_file()
+    os.remove(filename)
+    return fix_version_file(filename)
 
-def current_version():
-    fix_version_file()
+_version_filename_current = "version.number"
+_version_filename_previous = "data/last_version.number"
+
+def current_version() -> str:
+    fix_version_file(_version_filename_current)
     version = "0.0.0"
-    with open("version.number", "r") as file:
+    with open(_version_filename_current, "r") as file:
         version = file.read(-1).strip()
     return version
+
+def last_version() -> str | None:
+    if not os.path.exists(_version_filename_previous):
+        return None
+    fix_version_file(_version_filename_previous)
+    with open(_version_filename_previous, "r") as file:
+        return file.read(-1).strip()
 
 def synchronized_with(lock):
     def decorator(func):
@@ -3049,6 +3062,9 @@ class FilterActivationCallback:
 
 @shared.diagnose_entry
 def init():
+    if last_version() is None:
+        fix_version_file(_version_filename_previous)
+        spawn_thread(lambda: messagebox.showinfo("STT Onboarding", "It looks like it's your first time using speech to text! Open the settings (the gear in the top left) for more information, or read the README!"))
     set_INIT_STATE(InitState.PRESETTINGS)
     def on_exception(e: Exception, context: str | None = None):
         shared.record_exception(e, context)
@@ -3066,8 +3082,8 @@ def init():
         load_settings_from_config()
         print(f"settings took {startup_time.resetmstrnc()}s")
         free_ram = psutil.virtual_memory().available
-        required_ram = 5 * 1024**3 # 5GB
-        print(f"Current free ram is {free_ram}B or {free_ram / 1000 / 1000 / 1000}GB")
+        required_ram = 3 * 1024**3 # 5GB
+        print(f"Current free ram is {free_ram}B or {(free_ram / 1000 / 1000 / 1000):.2f}GB")
         if free_ram < required_ram:
             spawn_thread(messagebox.showerror, "Low system memory",
                         f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")

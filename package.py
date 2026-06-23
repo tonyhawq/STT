@@ -43,13 +43,13 @@ files_to_package: list[Packageable] = [
     Packageable.file("data/shared.py"),
     Packageable.file("data/installer.py"),
     Packageable.file("data/changelog.txt"),
-    Packageable.directory("embedded"),
+    Packageable.directory("runtime"),
     Packageable.directory("filters", ignore=[Packageable.directory("filters/__pycache__")]),
     Packageable.directory("data/models", ignore=[Packageable.directory("data/models/__pycache__")])
 ]
 
 files_to_package_without_embedded: list[Packageable] = files_to_package.copy()
-files_to_package_without_embedded.remove(Packageable.directory("embedded"))
+files_to_package_without_embedded.remove(Packageable.directory("runtime"))
 
 def is_ignored(file_path: Path, ignored_dirs: list[Packageable]) -> bool:
     for ig in ignored_dirs:
@@ -63,21 +63,28 @@ def is_ignored(file_path: Path, ignored_dirs: list[Packageable]) -> bool:
 def package_files(files: list[Packageable], zip_path: Path):
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         zipf.writestr(zinfo_or_arcname="version.number", data=version)
+        files_written = 0
         for pkg in files:
             if pkg.is_dir:
+                started_written = files_written
+                print(f"Writing directory {pkg.path()}")
                 base_path = Path(pkg.path()).resolve()
                 ignored = pkg.ignore
-
                 for file_path in base_path.rglob("*"):
                     if not is_ignored(file_path, ignored):
                         arcname = file_path.resolve().relative_to(Path.cwd())
+                        files_written += 1
                         zipf.write(file_path, arcname)
+                print(f"Wrote {files_written - started_written} files.")
             else:
                 src_path = Path(pkg.path()).resolve()
                 dst_path = Path(pkg.destination).resolve()
                 if src_path.exists():
                     arcname = dst_path.relative_to(Path.cwd())
+                    files_written += 1
+                    print(f"Writing file {src_path} ({files_written})")
                     zipf.write(filename=src_path, arcname=arcname)
+        print(f"Packaged {files_written} files.")
 
 if __name__ == "__main__":
     print("Version?")
@@ -91,7 +98,10 @@ if __name__ == "__main__":
     zip_without_embedded_filename = f"releases/STT_{version}_NOPYTHON.zip"
     if os.path.exists(zip_filename):
         print("Release already exists.")
-        exit(1)
+        if input("Overwrite? (Y/N) ").strip().lower() == "y":
+            pass
+        else:
+            exit(1)
     package_files(files_to_package, Path(zip_filename))
     package_files(files_to_package_without_embedded, Path(zip_without_embedded_filename))
     print(f"Packaged to \"{zip_filename}\"")
