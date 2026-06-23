@@ -35,6 +35,21 @@ CONFIG_BACKUP_FILENAME = CONFIG_PATH + "exampleconfig.toml"
 FILTERCONFIG_FILENAME = CONFIG_PATH + "filters.toml"
 FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
 
+def diagnose_entry(func: typing.Callable):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        print(f"FUNCTION ENTRY: {func.__name__} ({func})")
+        had_error = False
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            had_error = True
+            print(f" FUNCTION ENTRY EXCEPTION: {type(e).__name__} {e}")
+            raise
+        finally:
+            print(f" FUNCTION EXIT{' WITH EXCEPTION' if had_error else ''}: {func.__name__}")
+    return wrapper
+
 def get_model_path():
     print("get_model_path called. this function is really slow and sucks.")
     with open(CONFIG_FILENAME, "rb") as cfgf:
@@ -148,7 +163,9 @@ def _set_mbox_time():
     global LAST_MBOX_TIME
     LAST_MBOX_TIME = time.time()
 
+@diagnose_entry
 def record_exception(e: Exception, context: str | None = None) -> str:
+    print(f"shared.record_exception called with ({type(e).__name__}) {e}")
     if context is None:
         context = f"No context given for exception ({type(e).__name__}): {e}\n" + exception_to_filtered_traceback(e, context)
     filename = DATA_PATH + "logs/" + str(time.time()) + ".log"
@@ -159,6 +176,7 @@ def record_exception(e: Exception, context: str | None = None) -> str:
         log.write(context)
     return filename
 
+@diagnose_entry
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
         filename = record_exception(exception, context)
@@ -194,11 +212,13 @@ ReportExceptionHook = typing.Callable[[Exception, str | None], typing.Any]
 
 _exception_hooks: dict[str, ReportExceptionHook] = {}
 
+@diagnose_entry
 def add_exception_hook(name: str, func: ReportExceptionHook):
     if _exception_hooks.get(name) is not None:
         raise RuntimeError(f"Couldn't add exception hook {name}, {name} is already registered")
     _exception_hooks[name] = func
 
+@diagnose_entry
 def remove_exception_hook(name: str):
     if _exception_hooks.get(name) is None:
         raise RuntimeError(f"Couldn't remove exception hook {name}, {name} isn't registered.")
@@ -207,9 +227,11 @@ def remove_exception_hook(name: str):
 class ReportExceptionCancellationError(RuntimeError):
     pass
 
+@diagnose_entry
 def CancelExceptionReporting():
     raise ReportExceptionCancellationError("shared.CancelExceptionReporting was called.")
 
+@diagnose_entry
 def report_exception(e: Exception, context: str | None = None):
     print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}")
     context = exception_to_filtered_traceback(e, context=context)
@@ -220,6 +242,8 @@ def report_exception(e: Exception, context: str | None = None):
         except ReportExceptionCancellationError as e2:
             print(f"HOOK CANCELLED EXCEPTION REPORTING: {e2}")
             return
+        except Exception as e2:
+            quit_error(f"An exception was encountered in exception hook {name} ({hook})", e2)
     main_thread_async(_global_exception_handler, e, context)
 
 def _try_get_thread_context(*, showerror: bool = True) -> str | None:
@@ -299,6 +323,7 @@ def _deferred_queue_worker():
         for func in owned_funcs:
             func()
 
+@diagnose_entry
 def queue_deferred(func: typing.Callable, *args, **kwargs):
     with _deferred_queue_access:
         def wrapper():
@@ -339,6 +364,7 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: 
     filtered = filtered.removesuffix('\n') + '\n'
     return filtered
 
+@diagnose_entry
 def spawn_thread(func: typing.Callable, *args, **kwargs):
     context = _try_get_thread_context(showerror=False)
     if context is None:

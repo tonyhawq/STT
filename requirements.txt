@@ -9,7 +9,7 @@ scipy
 kaldi-io
 librosa
 hydra-core
-lightning
+lightning<2.4.0
 lhotse
 einops
 transformers

@@ -36,6 +36,8 @@ files_to_package: list[Packageable] = [
     Packageable.file("requirements.txt"),
     Packageable.file("debug.bat", destination="data/debug.bat"),
     Packageable.file("run.bat", destination="data/run.bat"),
+    Packageable.file("data/gear.png"),
+    Packageable.file("data/question_button.png"),
     Packageable.file("setup.bat"),
     Packageable.file("data/stt.py"),
     Packageable.file("data/shared.py"),

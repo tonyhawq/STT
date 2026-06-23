@@ -31,6 +31,8 @@ try:
     import ctypes.wintypes
     import inspect
     import copy
+    import faulthandler
+    import signal
     from enum import Enum
     import re
     print("Importing dependencies...")
@@ -59,13 +61,21 @@ except ImportError as e:
         pass
     sys.exit(1)
 
+faulthandler.enable()
+def signalhandler(sig, frame):
+    print(f"SIGNAL {sig} {frame}")
+signal.signal(signal.SIGTERM, signalhandler)
+signal.signal(signal.SIGINT, signalhandler)
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 FINAL_FATAL_MESSAGE: str | None = None
 
+@shared.diagnose_entry
 def quit_normal():
     root.destroy()
 
+@shared.diagnose_entry
 def quit_with_errorbox(message: str, source: Exception | None = None):
     if source is None:
         shared.record_exception(RuntimeError(f"quit_with_errorbox called with message \"{message}\", no exception given."))
@@ -81,7 +91,10 @@ def main_thread(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if threading.current_thread() is threading.main_thread():
-            return func(*args, **kwargs)
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                spawn_thread(report_exception, e)
         result = Box[typing.Any](None)
         error = Box[Exception | None](None)
         event = threading.Event()
@@ -107,7 +120,11 @@ def main_thread_async(func):
             func(*args, **kwargs)
             return
         def afterwrapper():
-            func(*args, **kwargs)
+            try:
+                func(*args, **kwargs)
+            except Exception as e:
+                print(f"MAIN THREAD ASYNC EXCEPTION ({type(e).__name__}) {e}")
+                report_exception(e)
         root.after(0, afterwrapper)
     return wrapper
 
@@ -140,6 +157,15 @@ def PHOTOIMAGE(file: str) -> tk.PhotoImage:
         sys.exit(1)
 
 root = tk.Tk()
+@shared.diagnose_entry
+def _root_destroy_wrapper(destroy=root.destroy):
+    for w in root.winfo_children():
+        try:
+            w.destroy()
+        except Exception as e:
+            print(f"EXCEPTION ({type(e).__name__}) {e} while destroying root children")
+    destroy()
+root.destroy = _root_destroy_wrapper
 root.config(bg="white")
 root.title("Speech To Text")
 root.attributes("-topmost", True)
@@ -166,7 +192,6 @@ def register_tkhook(name: str, func: typing.Callable):
             for hook in hooks:
                 hook(event)
         root.bind(name, _internal_tkhook)
-        
 
 def on_resize(event):
     if event.widget != root:
@@ -3022,6 +3047,7 @@ class FilterActivationCallback:
         print(f"Released FilterActivationCallback for {self.filter.title}")
         self.pressed = False
 
+@shared.diagnose_entry
 def init():
     set_INIT_STATE(InitState.PRESETTINGS)
     def on_exception(e: Exception, context: str | None = None):
@@ -3029,72 +3055,77 @@ def init():
         giveup_init(f"Encountered an exception in stage {InitState(INIT_STATE).as_human_readable_string()}: ({type(e).__name__}) {e}")
         loading_finished.set()
     shared.add_exception_hook("model_loading", on_exception)
-    startup_time = shared.Timer()
-    ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6) # hide console
-    wheel = "-"
     loading_finished = threading.Event()
-    can_spin = Box(False)
-    tk_config(label, text="Goaning stations...")
-    populate_named_inputs()
-    load_settings_from_config()
-    print(f"settings took {startup_time.resetmstrnc()}s")
-    free_ram = psutil.virtual_memory().available
-    required_ram = 5 * 1024**3 # 5GB
-    print(f"Current free ram is {free_ram}B or {free_ram / 1000 / 1000 / 1000}GB")
-    if free_ram < required_ram:
-        spawn_thread(messagebox.showerror, "Low system memory",
-                     f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
-    if allow_version_checking:
-        try:
-            current = current_version()
-            latest = latest_version()
-            if version_greater(latest, current):
-                changelog = fetch_changelog()
-                text = f"Check out the changelog?\nNew version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config file. (meta -> enable_version_checking)\nPress Yes to view the changelog."
-                if changelog.critical_updates is not None:
-                    text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config file. (meta -> enable_version_checking)"
-                spawn_thread(show_version_info, text, changelog, current)
-        except Exception as e:
-            spawn_thread(messagebox.showerror, "An error has occurred", f"Encountered {type(e).__name__} {e} while checking version.")
-    print(f"version checking took {startup_time.resetmstrnc()}s")
-    def load_model_worker():
-        load_model(loading_finished, can_spin)
-    set_INIT_STATE(InitState.PREMODELLOADING)
-    spawn_thread(load_model_worker)
-    data_arrived = threading.Event()
-    def finished_checker():
-        loading_finished.wait()
-        data_arrived.set()
-    spawn_thread(finished_checker)
-    def settext_checker():
-        while True:
-            _model_loadingtext_changed.wait()
-            if loading_finished.is_set():
-                return
+    def init_worker():
+        startup_time = shared.Timer()
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 6) # hide console
+        wheel = "-"
+        can_spin = Box(False)
+        tk_config(label, text="Goaning stations...")
+        populate_named_inputs()
+        load_settings_from_config()
+        print(f"settings took {startup_time.resetmstrnc()}s")
+        free_ram = psutil.virtual_memory().available
+        required_ram = 5 * 1024**3 # 5GB
+        print(f"Current free ram is {free_ram}B or {free_ram / 1000 / 1000 / 1000}GB")
+        if free_ram < required_ram:
+            spawn_thread(messagebox.showerror, "Low system memory",
+                        f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
+        if allow_version_checking:
+            try:
+                current = current_version()
+                latest = latest_version()
+                if version_greater(latest, current):
+                    changelog = fetch_changelog()
+                    text = f"Check out the changelog?\nNew version available! You are on {current}, but latest version is {latest}!\nDisable version checking in the config file. (meta -> enable_version_checking)\nPress Yes to view the changelog."
+                    if changelog.critical_updates is not None:
+                        text = f"A critical update is available for version {latest}! Critical: {changelog.critical_updates}!\nDisable version checking in the config file. (meta -> enable_version_checking)"
+                    spawn_thread(show_version_info, text, changelog, current)
+            except Exception as e:
+                spawn_thread(messagebox.showerror, "An error has occurred", f"Encountered {type(e).__name__} {e} while checking version.")
+        print(f"version checking took {startup_time.resetmstrnc()}s")
+        def load_model_worker():
+            load_model(loading_finished, can_spin)
+        set_INIT_STATE(InitState.PREMODELLOADING)
+        spawn_thread(load_model_worker)
+        data_arrived = threading.Event()
+        def finished_checker():
+            loading_finished.wait()
             data_arrived.set()
-            _model_loadingtext_changed.clear()
-    spawn_thread(settext_checker)
-    timeout_event = threading.Event()
-    def timeout_checker():
+        spawn_thread(finished_checker)
+        def settext_checker():
+            while True:
+                _model_loadingtext_changed.wait()
+                if loading_finished.is_set():
+                    return
+                data_arrived.set()
+                _model_loadingtext_changed.clear()
+        spawn_thread(settext_checker)
+        timeout_event = threading.Event()
+        def timeout_checker():
+            while True:
+                time.sleep(0.5)
+                if loading_finished.is_set():
+                    return
+                timeout_event.set()
+                data_arrived.set()
+        spawn_thread(timeout_checker)
         while True:
-            time.sleep(0.5)
+            data_arrived.wait()
+            data_arrived.clear()
             if loading_finished.is_set():
-                return
-            timeout_event.set()
-            data_arrived.set()
-    spawn_thread(timeout_checker)
-    while True:
-        data_arrived.wait()
-        data_arrived.clear()
-        if loading_finished.is_set():
-            break
-        if timeout_event.is_set():
-            timeout_event.clear()
-            wheel = advance_wheel(wheel)
-        if can_spin.value:
-            tk_config(label, text=f"{_curr_model_loadingtext} {wheel}")
-        else:
-            tk_config(label, text=_curr_model_loadingtext)
+                break
+            if timeout_event.is_set():
+                timeout_event.clear()
+                wheel = advance_wheel(wheel)
+            if can_spin.value:
+                tk_config(label, text=f"{_curr_model_loadingtext} {wheel}")
+            else:
+                tk_config(label, text=_curr_model_loadingtext)
+    try:
+        init_worker()
+    except Exception as e:
+        shared.report_exception(e)
     shared.remove_exception_hook("model_loading")
     if EARLY_GIVEUP_INIT:
         return
@@ -3119,6 +3150,7 @@ def init():
 
     tk_config(label, text="Waiting...")
 
+@shared.diagnose_entry
 def bootstrap():
     try:
         init()
@@ -3135,8 +3167,11 @@ def bootstrap():
 
 root.after(0, spawn_thread, bootstrap)
 
-root.mainloop()
-
+try:
+    root.mainloop()
+except Exception as e:
+    print(f"encountered an exception on mainloop: {e}")
+print("--- MAINLOOP TERMINATED")
 if FINAL_FATAL_MESSAGE is not None:
     ctypes.windll.user32.MessageBoxW(
         None,
