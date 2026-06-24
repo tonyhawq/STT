@@ -5,18 +5,23 @@ You can add simple filters to the text to add emotion.<br/>
 
 # Installation
 ## Dependencies:
- - Python 3.11 *exact* - can be found at `https://www.python.org/downloads/release/python-3119/` OR in the folder "embedded" that comes with STT
- - ADD PYTHON TO PATH, and DISABLE PATH LENGTH LIMIT
- - ~5GB storage space (~2.4 for STT model and ~2.4 for python libraries)
+ - Windows
+ - 4GB free hard drive space, with an additional that can be on a separate drive
 ## Installation:
-1. Download all the files to a new folder
-2. Run setup.bat
+1. Download a release from github
+2. Extract the zip to anywhere you like
+3. Run setup.bat and wait for the installation to finish
+4. Run run.bat
+5. Click the settings gear icon to change your settings or for help
+6. Press "allow" to download the ASR model
 
 # Usage
 1. Run using the `run.bat` script.<br/>
-2. Hold the `activate` key (defaults to mouse4) to record.<br/>
-3. Release to transcribe and send in-game.<br/>
-Edit `userconfig.toml` to change keybinds.<br/>
+2. If it's your first time, a popup will appear asking if you want to download from HF hub. This is the actual ASR model that you need to use STT, so press "allow"<br/>
+3. Hold the `activate` key (defaults to mouse4) to record.<br/>
+4. Release to transcribe and send in-game.<br/>
+5. Press the settings gear or edit `userconfig.toml` to change keybinds, ASR model type, or anything else.<br/>
+6. Edit `filters.toml` to create your own filters.<br/>
 
 # Plugins
 STT allows users to define their own text post-processing scripts to modify the generated transcripts before sending.<br/>
