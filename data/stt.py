@@ -115,6 +115,7 @@ def main_thread(func):
             return result.value
     return wrapper
 
+@shared.diagnose_entry(only_verbose=True, args=True)
 def main_thread_async(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -141,14 +142,16 @@ def _main_thread_async_shared_wrapper(func, *args, **kwargs):
     @main_thread_async
     @functools.wraps(func)
     def worker():
-        func(*args, **kwargs)
-    worker()
+        print(f"calling {_main_thread_async_shared_wrapper.__name__} with {func.__name__}")
+        return func(*args, **kwargs)
+    return worker()
 
 shared.begin(quit_func=quit_normal, quit_error_func=quit_with_errorbox, main_thread_sync_func=_main_thread_sync_shared_wrapper, main_thread_async_func=_main_thread_async_shared_wrapper)
 
 T = typing.TypeVar('T')
 U = typing.TypeVar('U')
 V = typing.TypeVar('V')
+P = typing.ParamSpec("P")
 
 def settingsbutton_command():
     spawn_thread(open_settings)
@@ -174,6 +177,8 @@ root.config(bg="white")
 root.title("Speech To Text")
 root.attributes("-topmost", True)
 root.minsize(shared.DEFAULT_WINDOW_WIDTH, shared.DEFAULT_WINDOW_HEIGHT)
+_base_root_after = root.after
+root.after = shared.diagnose_entry(only_verbose=True, args=True)(_base_root_after) # type: ignore
 label_frame = tk.Frame(root, width = shared.DEFAULT_WINDOW_WIDTH, height = shared.DEFAULT_WINDOW_HEIGHT, bg="white")
 label_frame.pack(fill="both", expand=True, padx=0, pady=0)
 settings_icon = PHOTOIMAGE("data/gear.png").subsample(2, 2)
@@ -213,7 +218,6 @@ CHOSEN_MODEL = None
 @main_thread
 def on_force_geometry_change():
     root.update_idletasks()
-    root.geometry(f"{root.winfo_reqwidth()}x{root.winfo_reqheight()}")
 
 class Configurable():
     def __init__(self, obj):
@@ -437,12 +441,18 @@ class SizedLabel:
 
 class ExpandableColumnFlow:
     def __init__(self, parent, columns):
-        self.lock = threading.Lock()
         self.parent_widget = parent
         self.columns = columns
         self.flat: list[SizedLabel] = []
         self._generate_grid()
         register_tkhook("<Configure>", self.root_resize_hook)
+        self.hooks: dict[str, typing.Callable[[ExpandableColumnFlow, typing.Literal['before', 'after']], typing.Any]] = {}
+
+    def register_hook(self, name: typing.Literal['on_add', 'on_remove'], hook: typing.Callable[["ExpandableColumnFlow", typing.Literal['before', 'after']], typing.Any]):
+        if name == "on_add":
+            self.hooks[name] = hook
+        elif name == "on_remove":
+            self.hooks[name] = hook
 
     def _generate_grid(self):
         self.grid = tk.Frame(self.parent_widget)
@@ -457,11 +467,15 @@ class ExpandableColumnFlow:
             self.grid.grid_columnconfigure(col, minsize=event.width // self.columns)
 
     @main_thread
+    @shared.diagnose_entry(simple=True)
     def get_height(self):
         return math.ceil(len(self.flat) / self.columns) * 25
 
     @main_thread
     def delete_button(self, widget: SizedLabel):
+        print(f"Delete button called")
+        print(f" -locked")
+        self.hooks.get("on_remove", lambda a, b: ...)(self, "before")
         index: int | None = None
         for i, other_widget in enumerate(self.flat):
             if other_widget == widget:
@@ -479,9 +493,13 @@ class ExpandableColumnFlow:
             self._generate_grid()
         root.update_idletasks()
         on_force_geometry_change()
+        self.hooks.get("on_remove", lambda a, b: ...)(self, "after")
         
     @main_thread
     def add_button(self) -> SizedLabel:
+        print(f"Add button called")
+        print(f" -locked")
+        self.hooks.get("on_add", lambda a, b: ...)(self, "before")
         widget = SizedLabel(self.grid, None, 25, anchor="center")
         row = math.floor(len(self.flat) / self.columns)
         column = len(self.flat) % self.columns
@@ -490,9 +508,35 @@ class ExpandableColumnFlow:
         self.flat.append(widget)
         root.update_idletasks()
         on_force_geometry_change()
+        self.hooks.get("on_add", lambda a, b: ...)(self, "after")
         return widget
 
-DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)#
+DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)
+_last_ecfh = 0
+@main_thread
+def _ecf_on_add_hook(flow: ExpandableColumnFlow, mode: typing.Literal['before', 'after']):
+    global _last_ecfh
+    if mode == "before":
+        _last_ecfh = flow.get_height()
+        return
+    if mode != "after":
+        raise RuntimeError("Unknown ecfmode \"after\"")
+    last_height = root.winfo_height()
+    root.geometry(f"{root.winfo_width()}x{last_height + (flow.get_height() - _last_ecfh)}")
+    
+@main_thread
+def _ecf_on_remove_hook(flow: ExpandableColumnFlow, mode: typing.Literal['before', 'after']):
+    global _last_ecfh
+    if mode == "before":
+        _last_ecfh = flow.get_height()
+        return
+    if mode != "after":
+        raise RuntimeError("Unknown ecfmode \"after\"")
+    last_height = root.winfo_height()
+    root.geometry(f"{root.winfo_width()}x{last_height + (flow.get_height() - _last_ecfh)}")
+
+DISPLAYED_MODIFIERS.register_hook("on_add", _ecf_on_add_hook)
+DISPLAYED_MODIFIERS.register_hook("on_remove", _ecf_on_remove_hook)
 
 class FilterManager:
     def __init__(self, display: ExpandableColumnFlow):
@@ -501,6 +545,7 @@ class FilterManager:
         self.registered_filters: dict[str, Filter] = {}
         self.enabled_filters: dict[str, Filter] = {}
         self.display = display
+        self.lock = threading.RLock()
 
     def register(self, filter: Filter):
         if filter.name in self.registered_filters:
@@ -515,41 +560,51 @@ class FilterManager:
         return source in filter.enabled_by
 
     def enable_filter(self, name: str, source: str):
-        print(f"Enabling filter \"{name}\" from \"{source}\"")
-        if not name in self.registered_filters:
-            raise RuntimeError(f"Attempted to enable filter {name} while {name} does not exist.")
-        filter = self.registered_filters[name]
-        was_disabled = len(filter.enabled_by) == 0
-        filter.enabled_by[source] = True
-        self.enabled_filters[filter.name] = filter
-        if was_disabled:
-            print(f"Filter was disabled, enabled. enabled_by is {filter.enabled_by}")
-            filter.on_enable()
-            with self.display.lock:
+        with self.lock:
+            print(f"Enabling filter \"{name}\" from \"{source}\"")
+            if not name in self.registered_filters:
+                raise RuntimeError(f"Attempted to enable filter {name} while {name} does not exist.")
+            filter = self.registered_filters[name]
+            was_disabled = len(filter.enabled_by) == 0
+            filter.enabled_by[source] = True
+            self.enabled_filters[filter.name] = filter
+            if was_disabled:
+                print(f"Filter was disabled, enabled. enabled_by is {filter.enabled_by}")
+                filter.on_enable()
+                if filter.display:
+                    self.display.delete_button(filter.display)
                 filter.display = self.display.add_button()
                 tk_config(filter.display.label, text=filter.title, background=filter.background, foreground=filter.text_color)
-        for action in filter.actions:
-            self.enable_action(action, source=filter)
+            for action in filter.actions:
+                self.enable_action(action, source=filter)
 
     def disable_filter(self, name: str, source: str):
-        print(f"Disabling filter \"{name}\" from \"{source}\"")
-        if not name in self.registered_filters:
-            raise RuntimeError(f"Attempted to disable filter {name} while {name} does not exist.")
-        filter = self.registered_filters[name]
-        if len(filter.enabled_by) == 0:
-            print(f"Attempted to disable \"{name}\" from source \"{source}\" while enabled_by was zero length")
-            return
-        filter.enabled_by.pop(source, None)
-        if len(filter.enabled_by) > 0:
-            return
-        self.enabled_filters.pop(filter.name, None)
-        filter.on_disable()
-        if not (filter.display is None):
-            with self.display.lock:
-                self.display.delete_button(filter.display)
-                filter.display = None
-        for action in filter.actions:
-            self.disable_action(action, source=filter)
+        with self.lock:
+            print(f"Disabling filter \"{name}\" from \"{source}\"")
+            if not name in self.registered_filters:
+                raise RuntimeError(f"Attempted to disable filter {name} while {name} does not exist.")
+            filter = self.registered_filters[name]
+            if len(filter.enabled_by) == 0:
+                print(f"Attempted to disable \"{name}\" from source \"{source}\" while enabled_by was zero length")
+                return
+            filter.enabled_by.pop(source, None)
+            if len(filter.enabled_by) > 0:
+                return
+            self.enabled_filters.pop(filter.name, None)
+            filter.on_disable()
+            if not (filter.display is None):
+                @main_thread
+                def wrapper(display=filter.display):
+                    if filter.display is None:
+                        raise RuntimeError("FilterManager attempted to delete the display of a filter that doesn't have a display set")
+                    try:
+                        self.display.delete_button(display)
+                        filter.display = None
+                    except:
+                        pass
+                wrapper()
+            for action in filter.actions:
+                self.disable_action(action, source=filter)
 
     def _impl_enable_action(self, action: ApplyableAction):
         self.enabled_actions[action.name] = action
@@ -886,14 +941,9 @@ def _open_settings_impl():
     global SETTINGS_WINDOW
     if SETTINGS_WINDOW is not None:
         raise RuntimeError("_open_settings_impl called while SETTINGS_WINDOW is not None")
-    SETTINGS_WINDOW = tk.Toplevel(master=root)
+    SETTINGS_WINDOW = shared.TopLevel(master=root, w=600, h=500)
     SETTINGS_WINDOW.title("Settings")
-    sw = 600
-    sh = 500
-    x_offset = (root.winfo_screenwidth() // 2) - (sw // 2)
-    y_offset = (root.winfo_screenheight() // 2) - (sh // 2)
-    SETTINGS_WINDOW.geometry(f"{sw}x{sh}+{x_offset}+{y_offset}")
-
+    
     with open(shared.CONFIG_FILENAME, "r") as f:
         config = tomlkit.load(f)
 
@@ -1322,7 +1372,7 @@ def is_mousebutton(value: str) -> bool:
 def is_input(value: str) -> bool:
     return is_key(value) or is_mousebutton(value)
 
-@shared.diagnose_entry
+@shared.diagnose_entry(simple=True)
 def fix_version_file(filename: str):
     version = "0.0.0"
     if not os.path.exists(filename):
@@ -1376,9 +1426,8 @@ class Changelog:
     @staticmethod
     @main_thread
     def show_logs(logs: list["Changelog"]):
-        window = tk.Toplevel()
+        window = shared.TopLevel(w=600, h=900)
         window.title(f"Changelog")
-        window.geometry(f"600x900+{window.winfo_screenwidth() // 2 - 600 // 2}+{window.winfo_screenheight() // 2 - 900 // 2}")
         text = tk.Text(window, wrap="word")
         text.pack(side="left", fill="both", expand=True)
         scrollbar = tk.Scrollbar(window, command=text.yview)
@@ -1438,9 +1487,8 @@ class Changelog:
 def show_changelogs_after(current: str):
     @main_thread
     def create_window() -> typing.Tuple[tk.Toplevel, tk.Text]:
-        window = tk.Toplevel()
+        window = shared.TopLevel(w=600, h=600)
         window.title(f"Changelog")
-        window.geometry(f"600x600+{window.winfo_screenwidth() // 2 - 600 // 2}+{window.winfo_screenheight() // 2 - 600 // 2}")
         status_label = tk.Label(window, text="Loading changelog...", justify="center", font=("Arial", 10))
         status_label.pack(pady=(20, 10))
         progress = ttk.Progressbar(window, mode="indeterminate", length=500)
@@ -2034,7 +2082,7 @@ class InitState(Enum):
 INIT_STATE = InitState.PREINIT
 _init_state_changed = threading.Event()
 
-@shared.diagnose_entry(args=True)
+@shared.diagnose_entry(args=True, simple=True)
 def set_INIT_STATE(state: int | InitState):
     global INIT_STATE
     INIT_STATE = state
@@ -2225,7 +2273,7 @@ AUTOMATION_TEXTEDIT: AutomationTextEdit | None = None
 class ProcessNotFoundError(RuntimeError):
     pass
 
-@shared.diagnose_entry
+@shared.diagnose_entry(simple=True)
 def _get_dreamseeker_pid() -> int:
     for proc in psutil.process_iter(["pid", "name"]):
         if proc.info["name"] and proc.info["name"].lower() == "dreamseeker.exe":
@@ -2239,7 +2287,7 @@ def _find_dreamseeker_window(pid: int | None = None) -> pywinauto.WindowSpecific
     print(f"finding chat entry bar from automation_id {hwnd_automation_id}")
     return pywinauto.Application(backend="uia").connect(process=pid).top_window()
 
-@shared.diagnose_entry
+@shared.diagnose_entry(simple=True)
 def _get_dreamseeker_editbox_hwnd():
     global AUTOMATION_TEXTEDIT
     pid = _get_dreamseeker_pid()
@@ -2353,13 +2401,12 @@ def ask_for_auto_chatbox():
 
 class ShittyLoadingBar:
     def __init__(self, title: str, text: str, destroy_callback: typing.Callable[["ShittyLoadingBar"], typing.Any], w: int | None = None, h: int | None = None):
-        self.window = tk.Toplevel()
-        self.window.title(title)
         if w is None:
             w = 450
         if h is None:
             h = 150
-        self.window.geometry(f"{w}x{h}")
+        self.window = shared.TopLevel(w=w, h=h)
+        self.window.title(title)
         self.window.resizable(True, True)
 
         def _this_destroy_callback(obj = self):
@@ -2389,7 +2436,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
     if FOUND_NEW_AUTOMATION_HWND.is_set():
         return False
     is_window_open = True
-    window = tk.Toplevel()
+    window = shared.TopLevel(w=700, h=500)
     window_close_event = threading.Event()
     def window_close_hook():
         global SHOULD_LOOK_FOR_AUTOMATION_HWND
@@ -2404,7 +2451,6 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
     window.protocol("WM_DELETE_WINDOW", window_close_hook)
     window.title("STT Chat Bar Selector")
     window.attributes("-topmost", True)
-    window.geometry("700x500")
     header = tk.Frame(window)
     header.pack(fill="x", padx=8, pady=6)
 
@@ -2873,17 +2919,17 @@ def on_key(event: keyboard.KeyboardEvent) -> bool:
         return False
     return True
 
-@shared.diagnose_entry
+@shared.diagnose_entry(simple=True)
 def mouse_listener():
     global _glob_mouse_listener
     with pynput.mouse.Listener(on_click=on_click) as _glob_mouse_listener: # type: ignore
         _glob_mouse_listener.join()
 
-@shared.diagnose_entry
+@shared.diagnose_entry(simple=True)
 def keyboard_listener():
     keyboard.hook(on_key, suppress=True)
 
-@shared.diagnose_entry
+@shared.diagnose_entry(simple=True)
 def _lazy_get_dreamseeker_hwnd():
     if use_hwnd:
         _get_dreamseeker_editbox_hwnd()
@@ -3194,30 +3240,6 @@ def init():
                     callback.on_release,
                     _suppress=registered_filter.activation_details.suppresses)
     set_INIT_STATE(InitState.FINISHED)
-
-    proc = psutil.Process(os.getpid())
-
-    for dll in proc.memory_maps():
-        path = dll.path.lower()
-
-        if any(x in path for x in (
-            "iomp",
-            "mkl",
-            "dnnl",
-            "omp",
-            "torch",
-            "cublas",
-            "cudnn",
-        )):
-            print(path)
-    
-    print("Creating test thread")
-
-    t = threading.Thread(target=lambda: None)
-    t.start()
-    t.join()
-
-    print("Test thread finished")
     spawn_thread(mouse_listener)
     spawn_thread(keyboard_listener)
 
@@ -3245,6 +3267,8 @@ try:
 except Exception as e:
     print(f"encountered an exception on mainloop: {e}")
 print("--- MAINLOOP TERMINATED")
+for tracked_toplevel in shared._tracked_toplevels:
+    tracked_toplevel.destroy()
 if FINAL_FATAL_MESSAGE is not None:
     ctypes.windll.user32.MessageBoxW(
         None,

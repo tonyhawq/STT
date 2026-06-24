@@ -4,7 +4,8 @@ import os
 class ParakeetV2(shared.SimpleASRModel):
     def __init__(self, state: shared.ModelLoadingState):
         super().__init__(state)
-        model_path = f"{state.model_dir}parakeet-tdt-0.6b-v2.nemo"
+        model_filename = "parakeet-tdt-0.6b-v2.nemo"
+        model_path = f"{state.model_dir}{model_filename}"
         if not os.path.exists(model_path):
             state.hide_spinner()
             if not state.ask_allow_or_deny(f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?"):
@@ -15,8 +16,8 @@ class ParakeetV2(shared.SimpleASRModel):
             state.checkpoints.ignore()
             hf_hub_download(
                 repo_id="nvidia/parakeet-tdt-0.6b-v2",
-                filename="parakeet-tdt-0.6b-v2.nemo",
-                local_dir=model_path,
+                filename=model_filename,
+                local_dir=state.model_dir,
                 local_dir_use_symlinks=False
                 )
             state.checkpoints.checkpoint("downloading model")

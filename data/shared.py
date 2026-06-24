@@ -36,29 +36,41 @@ CONFIG_BACKUP_FILENAME = CONFIG_PATH + "exampleconfig.toml"
 FILTERCONFIG_FILENAME = CONFIG_PATH + "filters.toml"
 FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
 
-def diagnose_entry(func=None, *, args=False):
+def diagnose_entry(func=None, *, args=False, simple=False, only_verbose=False):
     _show_args = args
+    _print_func = print
+    if only_verbose:
+        _print_func = verbose_print
     def decorator(func: typing.Callable):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            caller = inspect.stack()[1]
             if _show_args:
-                print(f"FUNCTION ENTRY {func.__name__} ({func}) entered\n  ARGS:")
-                for arg in args:
-                    print(f"  :({arg})")
-                for k, v in kwargs.items():
-                    print(f"  ({k}):({v})")
+                if simple:
+                    _print_func(f"Called {func.__name__} from {caller.function} with args {args} kwargs {kwargs}")
+                else:
+                    _print_func(f"FUNCTION ENTRY {func.__name__} ({func}) entered\n  ARGS:")
+                    for arg in args:
+                        _print_func(f"  :({arg})")
+                    for k, v in kwargs.items():
+                        _print_func(f"  ({k}):({v})")
             else:
-                caller = inspect.stack()[1]
-                print(f"FUNCTION ENTRY {func.__name__} ({func}) entered at {caller.filename}:{caller.lineno} in {caller.function}")
+                if simple:
+                    _print_func(f"Called {func.__name__} from {caller.function}")
+                else:
+                    _print_func(f"FUNCTION ENTRY {func.__name__} ({func}) entered at {caller.filename}:{caller.lineno} in {caller.function}")
             had_error = False
             try:
                 return func(*args, **kwargs)
             except Exception as e:
                 had_error = True
-                print(f" FUNCTION ENTRY {func.__name__} ({func}) exception {type(e).__name__} {e}")
+                _print_func(f" FUNCTION ENTRY {func.__name__} ({func}) exception {type(e).__name__} {e}")
                 raise
             finally:
-                print(f" FUNCTION EXIT {func.__name__} ({func}){' WITH EXCEPTION' if had_error else ''}")
+                if simple:
+                    _print_func(f" {func.__name__} exited")
+                else:
+                    _print_func(f" FUNCTION EXIT {func.__name__} ({func}){' WITH EXCEPTION' if had_error else ''}")
         return wrapper
     if func is not None:
         return decorator(func)
@@ -195,7 +207,7 @@ def record_exception(e: Exception, context: str | None = None) -> str:
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
         filename = record_exception(exception, context)
-        message = f"Encountered an exception: ({type(exception).__name__}) {exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
+        message = f"Encountered an exception: ({type(exception).__name__}) {exception}\nFull stacktrace available at \"data/current.log\" and \"data/{filename}\"."
         def show_mbox():
             global MBOX_POS
             global CAN_SHOW_MBOX
@@ -227,13 +239,13 @@ ReportExceptionHook = typing.Callable[[Exception, str | None], typing.Any]
 
 _exception_hooks: dict[str, ReportExceptionHook] = {}
 
-@diagnose_entry(args=True)
+@diagnose_entry(args=True, only_verbose=True)
 def add_exception_hook(name: str, func: ReportExceptionHook):
     if _exception_hooks.get(name) is not None:
         raise RuntimeError(f"Couldn't add exception hook {name}, {name} is already registered")
     _exception_hooks[name] = func
 
-@diagnose_entry(args=True)
+@diagnose_entry(args=True, only_verbose=True)
 def remove_exception_hook(name: str):
     if _exception_hooks.get(name) is None:
         raise RuntimeError(f"Couldn't remove exception hook {name}, {name} isn't registered.")
@@ -248,18 +260,22 @@ def CancelExceptionReporting():
 
 @diagnose_entry
 def report_exception(e: Exception, context: str | None = None):
-    print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}")
-    context = exception_to_filtered_traceback(e, context=context)
-    for name, hook in _exception_hooks.items():
-        print(f" Calling hook {name} ({hook}) for shared.report_exception")
-        try:
-            hook(e, context)
-        except ReportExceptionCancellationError as e2:
-            print(f"HOOK CANCELLED EXCEPTION REPORTING: {e2}")
-            return
-        except Exception as e2:
-            quit_error(f"An exception was encountered in exception hook {name} ({hook})", e2)
-    main_thread_async(_global_exception_handler, e, context)
+    try:
+        print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}")
+        context = exception_to_filtered_traceback(e, context=context)
+        for name, hook in _exception_hooks.items():
+            print(f" Calling hook {name} ({hook}) for shared.report_exception")
+            try:
+                hook(e, context)
+            except ReportExceptionCancellationError as e2:
+                print(f"HOOK CANCELLED EXCEPTION REPORTING: {e2}")
+                return
+            except Exception as e2:
+                quit_error(f"An exception was encountered in exception hook {name} ({hook})", e2)
+        print(f"GEH called")
+        main_thread_async(_global_exception_handler, e, context)
+    except Exception as e:
+        quit_error(f"Encountered an exception ({type(e).__name__}) {e}", e)
 
 def _try_get_thread_context(*, showerror: bool = True) -> str | None:
     try:
@@ -380,7 +396,7 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: 
     filtered = filtered.removesuffix('\n') + '\n'
     return filtered
 
-@diagnose_entry(args=True)
+@diagnose_entry(args=True, only_verbose=True)
 def spawn_thread(func: typing.Callable, *args, **kwargs):
     context = _try_get_thread_context(showerror=False)
     if context is None:
@@ -592,6 +608,20 @@ class PluginLoadingState(SharedLoadingState):
             raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} instead of a number. Fix this in {FILTERCONFIG_FILENAME}!")
         return option
 
+_tracked_toplevels: list[tk.Toplevel] = []
+
+def TopLevel(*args, w: int, h: int, **kwargs) -> tk.Toplevel:
+    win = tk.Toplevel(*args, **kwargs)
+    _tracked_toplevels.append(win)
+    def _destroy_wrapper(destroy=win.destroy):
+        destroy()
+        _tracked_toplevels.remove(win)
+    win.destroy = _destroy_wrapper
+    x_offset = (win.winfo_screenwidth() // 2) - (w // 2)
+    y_offset = (win.winfo_screenheight() // 2) - (h // 2)
+    win.geometry(f"{w}x{h}+{x_offset}+{y_offset}")
+    return win
+
 class ModelLoadingState(SharedLoadingState):
     def __init__(self,
                  window: tk.Tk,
@@ -649,20 +679,19 @@ class ModelLoadingState(SharedLoadingState):
                 self.quit()
                 raise ModelInitCancelledError()
             if choice:
-                self.cancel_init("A reboot of STT is required to finish the pytorch download. Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy")
+                self.cancel_init("A reboot of STT is required to finish the pytorch download. After pytorch is finished downloading, reboot STT. Don't do it before the installation completes.")
                 self.run_pytorch_downloader()
                 raise ModelInitCancelledError()
 
     def run_pytorch_downloader(self):
         def worker():
             self.settext("Waiting for PyTorch version to be selected...")
-            window = tk.Toplevel()
+            window = TopLevel(w=700, h=500)
             def window_close_hook():
                 window.destroy()
                 self.quit()
             window.protocol("WM_DELETE_WINDOW", window_close_hook)
             window.title("STT PyTorch Cuda Installer")
-            window.geometry("700x500")
             setattr(window, "gpu_var", tk.StringVar(window, value="Detecting..."))
             setattr(window, "driver_var", tk.StringVar(window, value="Detecting..."))
             setattr(window, "recommendation_var", tk.StringVar(window, value="Detecting..."))
@@ -718,9 +747,7 @@ class ModelLoadingState(SharedLoadingState):
                                 self.quit()
                         self.mainthread(finished)
                     except Exception as e:
-                        def errbox():
-                            messagebox.showwarning("An error occurred", f"An error occurred while trying to install CUDA: {e}")
-                        errbox()
+                        messagebox.showwarning("An error occurred", f"An error occurred while trying to install CUDA: {e}")
                 spawn_thread(worker)
                         
             def write_log(text: str):
@@ -741,33 +768,38 @@ class ModelLoadingState(SharedLoadingState):
             window.grid_columnconfigure(1, weight=1)
             write_log(" -- CUDA install log --")
             try:
-                write_log("Detecting installed GPU...")
                 result = subprocess.run(
                     ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                     capture_output=True, text=True, check=True
                 )
                 gpu_name = result.stdout.splitlines()[0].strip()
                 write_log(f"Found GPU {gpu_name}")
-                write_log("Detecting installed drivers...")
+                write_log("Detecting NVIDIA driver CUDA support...")
                 result = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                    ["nvidia-smi"],
                     capture_output=True, text=True, check=True
                 )
-                driver_str = result.stdout.splitlines()[0].strip()
-                driver_version = float(re.findall(r"^\d+\.\d+", driver_str)[0])
-                write_log(f"Found driver version {driver_version}")
+                match = re.search(r"CUDA Version:\s+(\d+\.\d+)", result.stdout)
+                if not match:
+                    raise RuntimeError("Unable to determine CUDA version from nvidia-smi.")
+                cuda_version = float(match.group(1))
+                write_log(f"Driver supports CUDA {cuda_version}")
                 gpu_var.set(gpu_name)
-                driver_var.set(driver_str)
-                if driver_version >= 525.60:
-                    cuda_tag = "cu126"
-                    torch_version = "2.12.0"
-                    recommendation_var.set("CUDA 12.6 (PyTorch v2.12.0)")
-                elif driver_version >= 450.80:
-                    cuda_tag = "cu118"
-                    torch_version = "2.2.2"
-                    recommendation_var.set("CUDA 11.8 (PyTorch v2.2.2)")
-                else:
-                    raise RuntimeError("No CUDA version available.")
+                driver_var.set(match.group(1))
+                pytorch_cuda_versions = [(13.2, "cu132", "2.12.0"), (13.0, "cu130", "2.12.0"), (12.8, "cu128", "2.12.0"), (12.6, "cu126", "2.12.0"), (11.8, "cu118", "2.2.2")]
+                cuda_tag = None
+                for required_version, tag, pt_version in pytorch_cuda_versions:
+                    if cuda_version >= required_version:
+                        cuda_tag = tag
+                        torch_version = pt_version
+                        break
+                if cuda_tag is None:
+                    raise RuntimeError(
+                        f"No supported PyTorch CUDA build for CUDA {cuda_version}"
+                    )
+                recommendation_var.set(
+                    f"CUDA {cuda_tag[2]}.{cuda_tag[3:]} (PyTorch v{torch_version})"
+                )
             except Exception as e:
                 write_log(f"No NVIDIA GPU detected.")
                 gpu_var.set("No NVIDIA GPU detected")
