@@ -38,16 +38,16 @@ FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
 def diagnose_entry(func: typing.Callable):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        print(f"FUNCTION ENTRY: {func.__name__} ({func})")
+        print(f"FUNCTION ENTRY {func.__name__} ({func}) entered")
         had_error = False
         try:
             return func(*args, **kwargs)
         except Exception as e:
             had_error = True
-            print(f" FUNCTION ENTRY EXCEPTION: {type(e).__name__} {e}")
+            print(f" FUNCTION ENTRY {func.__name__} ({func}) exception {type(e).__name__} {e}")
             raise
         finally:
-            print(f" FUNCTION EXIT{' WITH EXCEPTION' if had_error else ''}: {func.__name__}")
+            print(f" FUNCTION EXIT {func.__name__} ({func}){' WITH EXCEPTION' if had_error else ''}")
     return wrapper
 
 def get_model_path():
@@ -180,7 +180,7 @@ def record_exception(e: Exception, context: str | None = None) -> str:
 def _global_exception_handler(exception: Exception, context: str = "No context available."):
     try:
         filename = record_exception(exception, context)
-        message = f"{type(exception).__name__}:\n{exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
+        message = f"Encountered an exception: ({type(exception).__name__}) {exception}\nFull stacktrace available at \"current.log\" and \"{filename}\"."
         def show_mbox():
             global MBOX_POS
             global CAN_SHOW_MBOX
@@ -326,6 +326,7 @@ def _deferred_queue_worker():
 @diagnose_entry
 def queue_deferred(func: typing.Callable, *args, **kwargs):
     with _deferred_queue_access:
+        @functools.wraps(func)
         def wrapper():
             try:
                 func(*args, **kwargs)
@@ -453,6 +454,7 @@ class SharedLoadingState:
         main_thread_sync(worker)
     
     def queue_mainthread(self, func: typing.Callable[..., typing.Any], *args, **kwargs):
+        @functools.wraps(func)
         def wrapper():
             func(*args, **kwargs)
         self.window.after(0, wrapper)
@@ -463,6 +465,7 @@ class SharedLoadingState:
         value = None
         exception = None
         complete = threading.Event()
+        @functools.wraps(func)
         def wrapper():
             nonlocal value
             nonlocal exception

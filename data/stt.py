@@ -132,12 +132,14 @@ def main_thread_async(func):
 
 def _main_thread_sync_shared_wrapper(func, *args, **kwargs):
     @main_thread
+    @functools.wraps(func)
     def worker():
         return func(*args, **kwargs)
     return worker()
 
 def _main_thread_async_shared_wrapper(func, *args, **kwargs):
     @main_thread_async
+    @functools.wraps(func)
     def worker():
         func(*args, **kwargs)
     worker()
