@@ -95,7 +95,7 @@ if __name__ == "__main__":
         print("Does not match pattern \"x.x.x\".")
     print(f"Packaging version \"{version}\"")
     zip_filename = f"releases/STT_{version}.zip"
-    zip_without_embedded_filename = f"releases/STT_{version}_NOPYTHON.zip"
+    zip_without_embedded_filename = f"releases/STT_{version}_NORUNTIME.zip"
     if os.path.exists(zip_filename):
         print("Release already exists.")
         if input("Overwrite? (Y/N) ").strip().lower() == "y":

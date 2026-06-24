@@ -13,7 +13,7 @@ if exist runtime\python.exe (
     echo %ESC%[91m======================================================%ESC%[0m
     echo %ESC%[91mWARNING: Bundled Python runtime not found.%ESC%[0m
     echo %ESC%[91mDid you download the wrong file?%ESC%[0m
-    echo %ESC%[91mSTT_NO_RUNTIME doesn't include python by default.%ESC%[0m
+    echo %ESC%[91mSTT NORUNTIME doesn't include python by default.%ESC%[0m
     echo %ESC%[91mUsing a system Python may cause compatibility issues.%ESC%[0m
     echo %ESC%[91mOnly continue if you know what you're doing.%ESC%[0m
     echo %ESC%[91mPython 3.11 is required.%ESC%[0m
