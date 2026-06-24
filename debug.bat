@@ -1,3 +1,3 @@
 @echo off
-call run.bat
+venv\Scripts\python.exe -X faulthandler data\stt.py
 pause

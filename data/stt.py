@@ -175,8 +175,7 @@ root.title("Speech To Text")
 root.attributes("-topmost", True)
 root.minsize(shared.DEFAULT_WINDOW_WIDTH, shared.DEFAULT_WINDOW_HEIGHT)
 label_frame = tk.Frame(root, width = shared.DEFAULT_WINDOW_WIDTH, height = shared.DEFAULT_WINDOW_HEIGHT, bg="white")
-label_frame.pack_propagate(False)
-label_frame.pack(padx=0, pady=0)
+label_frame.pack(fill="both", expand=True, padx=0, pady=0)
 settings_icon = PHOTOIMAGE("data/gear.png").subsample(2, 2)
 label = tk.Label(label_frame, text="Pre-Init", bg="white", justify="center", font=("Arial", 12))
 label.pack(expand=True)
@@ -730,11 +729,11 @@ class Pressable:
         for value in values:
             try:
                 if value.strip().lower() in ("unbound", "unset"):
-                    print(f"Parsing hotkey {hotkey} found \"{value}\" which matches an unbinding")
+                    #print(f"Parsing hotkey {hotkey} found \"{value}\" which matches an unbinding")
                     had_unbound = True
                     continue
                 if had_unbound:
-                    print(f"Combination hotkey {hotkey} had an unbinding")
+                    #print(f"Combination hotkey {hotkey} had an unbinding")
                     pressables.clear()
                     break
                 codes = Pressable._str_to_scancode(value)
@@ -2035,6 +2034,7 @@ class InitState(Enum):
 INIT_STATE = InitState.PREINIT
 _init_state_changed = threading.Event()
 
+@shared.diagnose_entry(args=True)
 def set_INIT_STATE(state: int | InitState):
     global INIT_STATE
     INIT_STATE = state
@@ -2225,6 +2225,7 @@ AUTOMATION_TEXTEDIT: AutomationTextEdit | None = None
 class ProcessNotFoundError(RuntimeError):
     pass
 
+@shared.diagnose_entry
 def _get_dreamseeker_pid() -> int:
     for proc in psutil.process_iter(["pid", "name"]):
         if proc.info["name"] and proc.info["name"].lower() == "dreamseeker.exe":
@@ -2238,6 +2239,7 @@ def _find_dreamseeker_window(pid: int | None = None) -> pywinauto.WindowSpecific
     print(f"finding chat entry bar from automation_id {hwnd_automation_id}")
     return pywinauto.Application(backend="uia").connect(process=pid).top_window()
 
+@shared.diagnose_entry
 def _get_dreamseeker_editbox_hwnd():
     global AUTOMATION_TEXTEDIT
     pid = _get_dreamseeker_pid()
@@ -2275,6 +2277,7 @@ def set_config_hwnd_automation_id(auto_id: int):
 CURRENT_HIGHLIGHT: tk.Toplevel | None = None
 RUN_HIGHLIGHTS = True
 
+@main_thread
 def highlight_autogui_elem(elem):
     global CURRENT_HIGHLIGHT
     if CURRENT_HIGHLIGHT is None:
@@ -2292,14 +2295,24 @@ def _tk_highlight_flasher_worker():
         time.sleep(0.5)
         if CURRENT_HIGHLIGHT is None:
             continue
-        alpha_state = not alpha_state
-        if alpha_state:
-            CURRENT_HIGHLIGHT.attributes("-alpha", 0.5)
-        else:
-            CURRENT_HIGHLIGHT.attributes("-alpha", 0.1)
-    if CURRENT_HIGHLIGHT is not None:
-        CURRENT_HIGHLIGHT.destroy()
+        @main_thread
+        def worker():
+            nonlocal alpha_state
+            alpha_state = not alpha_state
+            if CURRENT_HIGHLIGHT is None:
+                return
+            if alpha_state:
+                CURRENT_HIGHLIGHT.attributes("-alpha", 0.5)
+            else:
+                CURRENT_HIGHLIGHT.attributes("-alpha", 0.1)
+        worker()
+    @main_thread
+    def destroyer():
+        if CURRENT_HIGHLIGHT is not None:
+            CURRENT_HIGHLIGHT.destroy()
+    destroyer()
 
+@main_thread
 def stop_current_highlight():
     global CURRENT_HIGHLIGHT
     if CURRENT_HIGHLIGHT is None:
@@ -2860,14 +2873,17 @@ def on_key(event: keyboard.KeyboardEvent) -> bool:
         return False
     return True
 
+@shared.diagnose_entry
 def mouse_listener():
     global _glob_mouse_listener
     with pynput.mouse.Listener(on_click=on_click) as _glob_mouse_listener: # type: ignore
         _glob_mouse_listener.join()
 
+@shared.diagnose_entry
 def keyboard_listener():
     keyboard.hook(on_key, suppress=True)
 
+@shared.diagnose_entry
 def _lazy_get_dreamseeker_hwnd():
     if use_hwnd:
         _get_dreamseeker_editbox_hwnd()
@@ -2973,28 +2989,39 @@ def load_model(finished: threading.Event, should_spin: Box[bool]):
         model_keywords=model_keywords,
         allow_cpu=allow_cpu_asr
         )
-    if CHOSEN_MODEL is None:
-        raise RuntimeError("CHOSEN_MODEL was None, expected string.")
-    if CHOSEN_MODEL == "none":
-        from models.fake_asr_model import FakeASRModel
-        asr_model = FakeASRModel(model_loading_state)
-    elif CHOSEN_MODEL == "parakeet":
-        from models.parakeetv2 import ParakeetV2
-        asr_model = ParakeetV2(model_loading_state)
-    elif CHOSEN_MODEL == "granite":
-        from models.granite_speech import GraniteSpeech4p1x2B
-        asr_model = GraniteSpeech4p1x2B(model_loading_state)
-    else:
-        spec = importlib.util.spec_from_file_location(CHOSEN_MODEL)
-        if spec is None:
-            raise ImportError(f"Couldn't load ASR model {CHOSEN_MODEL} (spec was None)")
-        if spec.loader is None:
-            raise ImportError(f"Couldn't load ASR model {CHOSEN_MODEL} (spec {spec} had None loader)")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        if not hasattr(module, "ASRModel"):
-            raise ImportError(f"While loading a user-defined ASR model, couldn't find the class \"ASRModel\". Did you name your class something else? Ensure that your model is named \"ASRModel\" exactly. ({CHOSEN_MODEL} does not have an ASRModel attribute.)")
-        asr_model = module.ASRModel(model_loading_state)
+    try:
+        if CHOSEN_MODEL is None:
+            raise RuntimeError("CHOSEN_MODEL was None, expected string.")
+        if CHOSEN_MODEL == "none":
+            from models.fake_asr_model import FakeASRModel
+            print("Loading FakeASRModel...")
+            asr_model = FakeASRModel(model_loading_state)
+            print("Loaded FakeASRModel.")
+        elif CHOSEN_MODEL == "parakeet":
+            from models.parakeetv2 import ParakeetV2
+            print("Loading ParakeetV2...")
+            asr_model = ParakeetV2(model_loading_state)
+            print("Loaded ParakeetV2.")
+        elif CHOSEN_MODEL == "granite":
+            from models.granite_speech import GraniteSpeech4p1x2B
+            print("Loading GraniteSpeech4p1x2B...")
+            asr_model = GraniteSpeech4p1x2B(model_loading_state)
+            print("Loaded GraniteSpeech4p1x2B.")
+        else:
+            spec = importlib.util.spec_from_file_location(CHOSEN_MODEL)
+            if spec is None:
+                raise ImportError(f"Couldn't load ASR model {CHOSEN_MODEL} (spec was None)")
+            if spec.loader is None:
+                raise ImportError(f"Couldn't load ASR model {CHOSEN_MODEL} (spec {spec} had None loader)")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if not hasattr(module, "ASRModel"):
+                raise ImportError(f"While loading a user-defined ASR model, couldn't find the class \"ASRModel\". Did you name your class something else? Ensure that your model is named \"ASRModel\" exactly. ({CHOSEN_MODEL} does not have an ASRModel attribute.)")
+            asr_model = module.ASRModel(model_loading_state)
+    except shared.ModelInitCancelledError:
+        print("Model init cancelled.")
+        return
+    print("Finished ASR loading.")
     model_loading_state.checkpoints.end()
     model_loading_state.checkpoints.print()
     show_spinner()
@@ -3167,6 +3194,30 @@ def init():
                     callback.on_release,
                     _suppress=registered_filter.activation_details.suppresses)
     set_INIT_STATE(InitState.FINISHED)
+
+    proc = psutil.Process(os.getpid())
+
+    for dll in proc.memory_maps():
+        path = dll.path.lower()
+
+        if any(x in path for x in (
+            "iomp",
+            "mkl",
+            "dnnl",
+            "omp",
+            "torch",
+            "cublas",
+            "cudnn",
+        )):
+            print(path)
+    
+    print("Creating test thread")
+
+    t = threading.Thread(target=lambda: None)
+    t.start()
+    t.join()
+
+    print("Test thread finished")
     spawn_thread(mouse_listener)
     spawn_thread(keyboard_listener)
 

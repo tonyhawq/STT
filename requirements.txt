@@ -21,9 +21,11 @@ sentencepiece
 pandas
 jiwer
 librosa
+scipy
+kaldi-io
 pyannote.core
 webdataset
 datasets
 editdistance
-pyannote-metrics
-ipython
+pyannote.metrics
+IPython

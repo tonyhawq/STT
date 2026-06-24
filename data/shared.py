@@ -16,6 +16,7 @@ import ctypes.wintypes
 import uuid
 import re
 import tomllib
+import inspect
 
 T = typing.TypeVar("T")
 
@@ -35,20 +36,34 @@ CONFIG_BACKUP_FILENAME = CONFIG_PATH + "exampleconfig.toml"
 FILTERCONFIG_FILENAME = CONFIG_PATH + "filters.toml"
 FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
 
-def diagnose_entry(func: typing.Callable):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        print(f"FUNCTION ENTRY {func.__name__} ({func}) entered")
-        had_error = False
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            had_error = True
-            print(f" FUNCTION ENTRY {func.__name__} ({func}) exception {type(e).__name__} {e}")
-            raise
-        finally:
-            print(f" FUNCTION EXIT {func.__name__} ({func}){' WITH EXCEPTION' if had_error else ''}")
-    return wrapper
+def diagnose_entry(func=None, *, args=False):
+    _show_args = args
+    def decorator(func: typing.Callable):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if _show_args:
+                print(f"FUNCTION ENTRY {func.__name__} ({func}) entered\n  ARGS:")
+                for arg in args:
+                    print(f"  :({arg})")
+                for k, v in kwargs.items():
+                    print(f"  ({k}):({v})")
+            else:
+                caller = inspect.stack()[1]
+                print(f"FUNCTION ENTRY {func.__name__} ({func}) entered at {caller.filename}:{caller.lineno} in {caller.function}")
+            had_error = False
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                had_error = True
+                print(f" FUNCTION ENTRY {func.__name__} ({func}) exception {type(e).__name__} {e}")
+                raise
+            finally:
+                print(f" FUNCTION EXIT {func.__name__} ({func}){' WITH EXCEPTION' if had_error else ''}")
+        return wrapper
+    if func is not None:
+        return decorator(func)
+    else:
+        return decorator
 
 def get_model_path():
     print("get_model_path called. this function is really slow and sucks.")
@@ -212,13 +227,13 @@ ReportExceptionHook = typing.Callable[[Exception, str | None], typing.Any]
 
 _exception_hooks: dict[str, ReportExceptionHook] = {}
 
-@diagnose_entry
+@diagnose_entry(args=True)
 def add_exception_hook(name: str, func: ReportExceptionHook):
     if _exception_hooks.get(name) is not None:
         raise RuntimeError(f"Couldn't add exception hook {name}, {name} is already registered")
     _exception_hooks[name] = func
 
-@diagnose_entry
+@diagnose_entry(args=True)
 def remove_exception_hook(name: str):
     if _exception_hooks.get(name) is None:
         raise RuntimeError(f"Couldn't remove exception hook {name}, {name} isn't registered.")
@@ -365,7 +380,7 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: 
     filtered = filtered.removesuffix('\n') + '\n'
     return filtered
 
-@diagnose_entry
+@diagnose_entry(args=True)
 def spawn_thread(func: typing.Callable, *args, **kwargs):
     context = _try_get_thread_context(showerror=False)
     if context is None:
@@ -615,6 +630,9 @@ class ModelLoadingState(SharedLoadingState):
         print("torch version:", torch.__version__)
         print("cuda available:", torch.cuda.is_available())
         print("cuda version:", torch.version.cuda)
+        print("Torch threads:", torch.get_num_threads())
+        print("Torch interop:", torch.get_num_interop_threads())
+        print("Python threads:", len(threading.enumerate()))
         if not torch.cuda.is_available() and not self.allow_cpu:
             self.settext("Waiting for user input...")
             why_no_cuda = "Something went wrong."
@@ -631,7 +649,7 @@ class ModelLoadingState(SharedLoadingState):
                 self.quit()
                 raise ModelInitCancelledError()
             if choice:
-                self.cancel_init("A reboot of STT is required to finish the pytorch download.")
+                self.cancel_init("A reboot of STT is required to finish the pytorch download. Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy Diddy")
                 self.run_pytorch_downloader()
                 raise ModelInitCancelledError()
 
