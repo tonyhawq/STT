@@ -889,7 +889,11 @@ def _open_settings_impl():
         raise RuntimeError("_open_settings_impl called while SETTINGS_WINDOW is not None")
     SETTINGS_WINDOW = tk.Toplevel(master=root)
     SETTINGS_WINDOW.title("Settings")
-    SETTINGS_WINDOW.geometry("600x500")
+    sw = 600
+    sh = 500
+    x_offset = (root.winfo_screenwidth() // 2) - (sw // 2)
+    y_offset = (root.winfo_screenheight() // 2) - (sh // 2)
+    SETTINGS_WINDOW.geometry(f"{sw}x{sh}+{x_offset}+{y_offset}")
 
     with open(shared.CONFIG_FILENAME, "r") as f:
         config = tomlkit.load(f)

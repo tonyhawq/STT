@@ -14,3 +14,16 @@ tomlkit
 torchaudio
 pyloudnorm
 requests
+hydra-core
+lhotse
+einops
+sentencepiece
+pandas
+jiwer
+librosa
+pyannote.core
+webdataset
+datasets
+editdistance
+pyannote-metrics
+ipython

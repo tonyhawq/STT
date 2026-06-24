@@ -99,7 +99,14 @@ if __name__ == "__main__":
     if os.path.exists(zip_filename):
         print("Release already exists.")
         if input("Overwrite? (Y/N) ").strip().lower() == "y":
-            pass
+            try:
+                os.remove(zip_filename)
+            except Exception as e:
+                print(f"({type(e).__name__}) {e}")
+            try:
+                os.remove(zip_without_embedded_filename)
+            except Exception as e:
+                print(f"({type(e).__name__}) {e}")
         else:
             exit(1)
     package_files(files_to_package, Path(zip_filename))
