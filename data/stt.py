@@ -42,7 +42,6 @@ try:
     from shared import spawn_thread, report_exception
     print("Importing gui...")
     import tkinter as tk
-    import tkinter.filedialog
     from tkinter import messagebox
     import tkinter.ttk as ttk
 except ImportError as e:
@@ -250,16 +249,14 @@ def tk_config(obj, **kwargs):
     obj.config(**kwargs)
 
 class ApplyableAction:
+    DefaultAction: typing.ClassVar[typing.Callable[[str], str]] = shared.PluginNoAction
+
     def __init__(self, name: str, manager: "FilterManager", priority: float):
         self.manager = manager
         self.name = name
         self.priority = priority
         self.enabled_by: dict[str, bool] = {}
         self.action: typing.Callable[[str], str] = ApplyableAction.DefaultAction
-
-    @staticmethod
-    def DefaultAction(input: str) -> str:
-        raise RuntimeError(f"Attempted to call an ApplyableAction which does not have an action bound.\nGiven input string was: \"{input}\"")
 
     def __repr__(self):
         return "ApplyableAction." + self.name
@@ -784,11 +781,11 @@ class Pressable:
         for value in values:
             try:
                 if value.strip().lower() in ("unbound", "unset"):
-                    #print(f"Parsing hotkey {hotkey} found \"{value}\" which matches an unbinding")
+                    print(f"Parsing hotkey {hotkey} found \"{value}\" which matches an unbinding")
                     had_unbound = True
                     continue
                 if had_unbound:
-                    #print(f"Combination hotkey {hotkey} had an unbinding")
+                    print(f"Combination hotkey {hotkey} had an unbinding")
                     pressables.clear()
                     break
                 codes = Pressable._str_to_scancode(value)
@@ -1975,7 +1972,10 @@ def load_settings_from_config():
     hwnd_settings = config_get_dict(output, "hwnd_settings")
     input = config_get_dict(config, "input")
     meta = config_get_dict(config, "meta")
-
+    if config_has_key(meta, "verbose"):
+        shared.VERBOSE = config_get_bool(meta, "verbose")
+        if not shared.VERBOSE:
+            faulthandler.disable()
     global minimum_utterance_detection_length
     global minimum_utterance_audio_length
     global do_loudness_normalization
@@ -2128,6 +2128,8 @@ def record():
     global state
     global STOP_RECORDING
     global RECORDING_STREAM
+    global CANCEL_PROCESS
+    global TRANSCRIBED
     if not RECORDING_STREAM:
         raise RuntimeError("Attempted to call record while RECORDING_STREAM was None")
     while True:
@@ -2163,7 +2165,6 @@ def record():
         file.close()
         STOP_RECORDING = False
         state = State.PROCESSING
-    global TRANSCRIBED
     tk_config(label, text="Transcribing...")
     if asr_model is None:
         raise RuntimeError("Attempted to call transcribe on a None asr_model.")
@@ -2174,8 +2175,15 @@ def record():
         _finalize_process()
         return
     tk_config(label, text=TRANSCRIBED)
-    with STATUS_LOCK:
-        state = State.ACCEPTING
+    try:
+        TRANSCRIBED = FILTERS.transform_input(TRANSCRIBED)
+        tk_config(label, text=TRANSCRIBED)
+    except shared.TranscriptionCancelledError:
+        CANCEL_PROCESS = True
+        return
+    finally:
+        with STATUS_LOCK:
+            state = State.ACCEPTING
     if autosend:
         submit()
 
@@ -2726,7 +2734,6 @@ def submit():
     global TRANSCRIBED
     with STATUS_LOCK:
         transcript = TRANSCRIBED
-    transcript = FILTERS.transform_input(transcript)
     _finalize_process()
     tk_config(label, text=transcript)
     print("--- Submitting transcript")
@@ -2957,7 +2964,7 @@ def _set_model_loadingtext(text: str):
 def _load_model_get_hwnd():
     _set_model_loadingtext("Locating dreamseeker.exe")
     hwnd_ok = True
-    hwnd_bad_reason: pywinauto.ElementNotFoundError | ProcessNotFoundError | None = None 
+    hwnd_bad_reason: pywinauto.ElementNotFoundError | ProcessNotFoundError | OSError | None = None 
     try:
         print("lazy locating dreamseeker.exe")
         _lazy_get_dreamseeker_hwnd()
@@ -2965,6 +2972,9 @@ def _load_model_get_hwnd():
         hwnd_ok = False
         hwnd_bad_reason = e
     except ProcessNotFoundError as e:
+        hwnd_ok = False
+        hwnd_bad_reason = e
+    except OSError as e:
         hwnd_ok = False
         hwnd_bad_reason = e
     if not hwnd_ok:
@@ -3004,6 +3014,9 @@ def _load_model_get_hwnd():
                     time.sleep(1)
                 except ProcessNotFoundError as e:
                     _set_model_loadingtext("Waiting for SS13 to be launched...")
+                    time.sleep(1)
+                except OSError as e:
+                    _set_model_loadingtext(f"Encountered an OSError, retrying... ({e})")
                     time.sleep(1)
             else:
                 _set_model_loadingtext("Waiting for new chat box to be selected...")

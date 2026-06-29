@@ -19,6 +19,7 @@ import tomllib
 import inspect
 
 T = typing.TypeVar("T")
+P = typing.ParamSpec("P")
 
 thread_context = threading.local()
 
@@ -397,7 +398,7 @@ def filtered_traceback(parent_frame: types.TracebackType | None = None, indent: 
     return filtered
 
 @diagnose_entry(args=True, only_verbose=True)
-def spawn_thread(func: typing.Callable, *args, **kwargs):
+def spawn_thread(func: typing.Callable[P, T], *args: P.args, **kwargs: P.kwargs):
     context = _try_get_thread_context(showerror=False)
     if context is None:
         context = ""
@@ -409,10 +410,16 @@ def spawn_thread(func: typing.Callable, *args, **kwargs):
     thread.start()
 
 def quit() -> typing.Any:
-    raise RuntimeError("Default shared.quit called. Was shared.begin called before this point?")
+    print(f"DEFAULT shared.quit called!")
+    for i in range(5):
+        print(f"THIS IS A CATASTROPHIC ERROR!!")
+    os._exit(1)
 
 def quit_error(text: str, source: Exception | None = None) -> typing.Any:
-    raise RuntimeError(f"shared.quit_error called with text {text}. Was shared.begin called before this point?")
+    print(f"DEFAULT shared.quit_error called with text {text}! ({type(source).__name__}) {source}")
+    for i in range(5):
+        print(f"THIS IS A CATASTROPHIC ERROR!!")
+    os._exit(1)
 
 def main_thread_sync(_: typing.Callable[..., T], *args, **kwargs) -> T:
     raise RuntimeError("Attempted to call shared.main_thread_sync before shared.begin was called.")
@@ -420,6 +427,10 @@ def main_thread_sync(_: typing.Callable[..., T], *args, **kwargs) -> T:
 def main_thread_async(_: typing.Callable, *args, **kwargs):
     raise RuntimeError("Attempted to call shared.main_thread_async before shared.begin was called.")
 
+def PluginNoAction(input: str) -> str:
+    return input
+
+@diagnose_entry
 def begin(
         quit_func: typing.Callable[[], typing.Any],
         quit_error_func: typing.Callable[[str, Exception | None], typing.Any],
@@ -465,6 +476,9 @@ class Checkpoint:
             print(f"{name}: {((end - start) * 1000):.2f}ms")
         final_checkpoint = self.checkpoints[len(self.checkpoints) - 1]
         print(f"TOTAL ---\n  {((final_checkpoint[1] - starting_checkpoint[1]) * 1000):.2f}ms")
+
+class TranscriptionCancelledError(RuntimeError):
+    pass
 
 class ModelInitCancelledError(RuntimeError):
     pass
@@ -583,9 +597,9 @@ class PluginLoadingState(SharedLoadingState):
             raise self._missing_action_options()
         option = self.action_options.get(option_name)
         if option is None:
-            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option}\" (a string value)! Add it in {FILTERCONFIG_FILENAME}!")
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option_name}\" (a string value)! Add it in {FILTERCONFIG_FILENAME}!")
         if not isinstance(option, str):
-            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} instead of a string. Fix this in {FILTERCONFIG_FILENAME}!")
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} as \"{option_name}\" instead of a string. Fix this in {FILTERCONFIG_FILENAME}!")
         return option
 
     def get_option_bool(self, option_name: str) -> bool:
@@ -593,9 +607,9 @@ class PluginLoadingState(SharedLoadingState):
             raise self._missing_action_options()
         option = self.action_options.get(option_name)
         if option is None:
-            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option}\" (a boolean value)! Add it in {FILTERCONFIG_FILENAME}!")
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option_name}\" (a boolean value)! Add it in {FILTERCONFIG_FILENAME}!")
         if not isinstance(option, bool):
-            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} instead of a boolean. Fix this in {FILTERCONFIG_FILENAME}!")
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} as \"{option_name}\" instead of a boolean. Fix this in {FILTERCONFIG_FILENAME}!")
         return option
     
     def get_option_number(self, option_name: str) -> float:
@@ -603,10 +617,31 @@ class PluginLoadingState(SharedLoadingState):
             raise self._missing_action_options()
         option = self.action_options.get(option_name)
         if option is None:
-            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option}\" (a number value)! Add it in {FILTERCONFIG_FILENAME}!")
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" is missing \"{option_name}\" (a number value)! Add it in {FILTERCONFIG_FILENAME}!")
         if not isinstance(option, (int, float)) or isinstance(option, bool):
-            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} instead of a number. Fix this in {FILTERCONFIG_FILENAME}!")
+            raise RuntimeError(f"action_options for filter \"{self.filter_name}\" has a {type(option).__name__} as \"{option_name}\" instead of a number. Fix this in {FILTERCONFIG_FILENAME}!")
         return option
+
+    def get_option_str_or(self, option_name: str, default: str) -> str:
+        try:
+            return self.get_option_str(option_name)
+        except:
+            pass
+        return default
+    
+    def get_option_bool_or(self, option_name: str, default: bool) -> bool:
+        try:
+            return self.get_option_bool(option_name)
+        except:
+            pass
+        return default
+    
+    def get_option_number_or(self, option_name: str, default: float) -> float:
+        try:
+            return self.get_option_number(option_name)
+        except:
+            pass
+        return default
 
 _tracked_toplevels: list[tk.Toplevel] = []
 
@@ -850,3 +885,8 @@ class Timer:
     
     def timemstrnc(self) -> str:
         return f"{self.timems():.2f}"
+
+def profile(func: typing.Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> typing.Tuple[T, float]:
+    timer = Timer()
+    val = func(*args, **kwargs)
+    return (val, timer.time())
