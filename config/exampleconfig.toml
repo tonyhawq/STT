@@ -13,7 +13,8 @@ autosend = true
 # Keys that are blocked during chat/say
 # Add more here if you consistenly mess up what you're trying to say
 blocked_keys = [
-    "w", "a", "s", "d", "e", "q", "z", "x",
+    "q", "w", "e", "r", "t", "y", "a", "s", "d",
+    "f", "g", "h", "z", "x", "c", "v", "b", "n",
     "lmb", "rmb", "ctrl", "alt", "space"
 ]
 
@@ -25,6 +26,12 @@ blocked_keys = [
 # with one of them, try the others and see if
 # the issue goes away.
 output_method = "hwnd"
+# Whether to use your clipboard for sending.
+# Using the clipboard may be more reliable, it may not.
+# If you run into issues, try changing this setting
+use_clipboard = true
+# The prefix added to a message when using the radio mode.
+radio_prefix = ";"
 
 [output.say_settings]
 # Delay between opening the window and

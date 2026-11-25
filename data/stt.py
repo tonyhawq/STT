@@ -244,9 +244,19 @@ class Configurable():
             spawn_thread(callable_wrapper)
         return apply
 
+_tk_config_hooks: dict[tk.BaseWidget, list[typing.Callable[[tk.BaseWidget, dict[str, typing.Any]], None]]] = {}
+
+@main_thread_async
+def tk_listen_for_config(obj, func: typing.Callable[[tk.BaseWidget, dict[str, typing.Any]], None]):
+    existing = _tk_config_hooks.setdefault(obj, [])
+    existing.append(func)
+
 @main_thread_async
 def tk_config(obj, **kwargs):
     obj.config(**kwargs)
+    hooks = _tk_config_hooks.get(obj, [])
+    for hook in hooks:
+        hook(obj, kwargs)
 
 class ApplyableAction:
     DefaultAction: typing.ClassVar[typing.Callable[[str], str]] = shared.PluginNoAction
@@ -508,6 +518,8 @@ class ExpandableColumnFlow:
         self.hooks.get("on_add", lambda a, b: ...)(self, "after")
         return widget
 
+CONTROLS_DISABLED = False
+
 DISPLAYED_MODIFIERS = ExpandableColumnFlow(root, 3)
 _last_ecfh = 0
 @main_thread
@@ -517,7 +529,7 @@ def _ecf_on_add_hook(flow: ExpandableColumnFlow, mode: typing.Literal['before', 
         _last_ecfh = flow.get_height()
         return
     if mode != "after":
-        raise RuntimeError("Unknown ecfmode \"after\"")
+        raise RuntimeError(f"Unknown ecfmode \"{mode}\"")
     last_height = root.winfo_height()
     root.geometry(f"{root.winfo_width()}x{last_height + (flow.get_height() - _last_ecfh)}")
     
@@ -528,7 +540,7 @@ def _ecf_on_remove_hook(flow: ExpandableColumnFlow, mode: typing.Literal['before
         _last_ecfh = flow.get_height()
         return
     if mode != "after":
-        raise RuntimeError("Unknown ecfmode \"after\"")
+        raise RuntimeError(f"Unknown ecfmode \"{mode}\"")
     last_height = root.winfo_height()
     root.geometry(f"{root.winfo_width()}x{last_height + (flow.get_height() - _last_ecfh)}")
 
@@ -914,6 +926,8 @@ class Control:
         return False
         
 autosend = False
+USE_CLIPBOARD = False
+RADIO_PREFIX = ";"
 use_say = False
 use_hwnd = False
 hwnd_speech_indicator = False
@@ -932,6 +946,34 @@ def lblwrap(label: ttk.Label) -> ttk.Label:
     return label
 
 QUESTION_ICON = PHOTOIMAGE("data/question_button.png").subsample(2, 2)
+
+_controls_disabled_label_text = "CONTROLS DISABLED"
+_last_label_state = ""
+def _disabled_control_label_hook(obj, args):
+    new_label = args.get("text")
+    if new_label is None:
+        return
+    if new_label == _controls_disabled_label_text:
+        return
+    global _last_label_state
+    _last_label_state = new_label
+    if CONTROLS_DISABLED:
+        tk_config(label, text=_controls_disabled_label_text)
+
+tk_listen_for_config(label, _disabled_control_label_hook)
+@main_thread
+def disable_all_controls():
+    global CONTROLS_DISABLED
+    CONTROLS_DISABLED = True
+    background.config_and_apply(bg="red")
+    tk_config(label, text=_controls_disabled_label_text)
+
+@main_thread
+def enable_all_controls():
+    global CONTROLS_DISABLED
+    CONTROLS_DISABLED = False
+    background.config_and_apply(bg="white")
+    tk_config(label, text=_last_label_state)
 
 @main_thread
 def _open_settings_impl():
@@ -1131,7 +1173,7 @@ def _open_settings_impl():
     def add_buttons(tab: tk.Frame) -> tk.Frame:
         base_frame = tk.Frame(tab)
         base_frame.pack(fill="both", expand=True)
-        def apply_cmd():
+        def apply_cmd(*, restart: bool = False):
             apply_button.config(state="disabled")
             discard_button.config(state="disabled")
             finished = threading.Event()
@@ -1139,6 +1181,10 @@ def _open_settings_impl():
                 try:
                     try:
                         save_to_file()
+                        if restart:
+                            os.execv(sys.executable, [sys.executable] + sys.argv)
+                        else:
+                            messagebox.showinfo("Restart required", f"Your settings have been saved. Restart to apply.")
                     except TypeError as e:
                         shared.record_exception(e)
                         messagebox.showerror("Couldn't save", f"Couldn't save the config. ({type(e).__name__}) {e}")
@@ -1156,6 +1202,8 @@ def _open_settings_impl():
             if SETTINGS_WINDOW is None:
                 raise RuntimeError("SETTINGS_WINDOW is None within Discard button command.")
             SETTINGS_WINDOW.destroy()
+        apply_button = tk.Button(tab, text="Apply and Restart", font=header_font, command=lambda: apply_cmd(restart=True))
+        apply_button.pack(side="left", padx=10, pady=10)
         apply_button = tk.Button(tab, text="Apply", font=header_font, command=apply_cmd)
         apply_button.pack(side="left", padx=10, pady=10)
         discard_button = tk.Button(tab, text="Discard", font=header_font, command=discard_cmd)
@@ -1225,13 +1273,102 @@ def _open_settings_impl():
     stored_vars["input:autosend@bool"] = tk.BooleanVar(value=config["input"]["autosend"])
     stored_vars["input:activate_globally_blocked@bool"] = tk.BooleanVar(value=config["input"]["activate_globally_blocked"])
     stored_vars["input:blocked_keys@list@string"] = config["input"]["blocked_keys"]
+
+    def record_keybind(parent, variable):
+        disable_all_controls()
+        window = tk.Toplevel(parent)
+        window.title("Set keybind")
+        window.transient(parent)
+        window.grab_set()
+        ttk.Label(
+            window,
+            text="Press your desired key combination...\nRelease all keys to confirm. Escape to cancel."
+        ).pack(padx=20, pady=20)
+        pressed_keys: set[str] = set()
+        captured_keys: set[str] = set()
+        modifier_names = {
+            "control_l": "ctrl",
+            "control_r": "ctrl",
+            "shift_l": "shift",
+            "shift_r": "shift",
+            "alt_l": "alt",
+            "alt_r": "alt",
+            "meta_l": "meta",
+            "meta_r": "meta",
+            "mouse1": "lmb",
+            "mouse2": "mmb",
+            "mouse3": "rmb",
+            "mouse5": "x2",
+            "mouse4": "x1"
+        }
+
+        @main_thread
+        def close_window():
+            enable_all_controls()
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", close_window)
+
+        def on_key_press(event: tk.Event):
+            key = event.keysym.lower()
+            if key == "escape":
+                close_window()
+                return
+            pressed_keys.add(key)
+            captured_keys.add(key)
+
+        def _on_release():
+            if not pressed_keys and captured_keys:
+                keys: list[str] = []
+                for key in captured_keys:
+                    keys.append(modifier_names.get(key, key.lower()))
+                variable.set("+".join(sorted(keys)))
+                close_window()
+
+        def on_key_release(event: tk.Event):
+            pressed_keys.discard(event.keysym.lower())
+            _on_release()
+
+        def on_mouse_press(event: tk.Event):
+            key = f"mouse{event.num}"
+            pressed_keys.add(key)
+            captured_keys.add(key)
+
+        def on_mouse_release(event: tk.Event):
+            key = f"mouse{event.num}"
+            pressed_keys.discard(key)
+            _on_release()
+
+        window.bind("<ButtonPress>", on_mouse_press)
+        window.bind("<ButtonRelease>", on_mouse_release)
+
+        window.bind("<KeyPress>", on_key_press)
+        window.bind("<KeyRelease>", on_key_release)
+
+        window.bind()
+
+        window.focus_force()
+        window.update_idletasks()
+        window.geometry(f"+{(window.winfo_screenwidth() - window.winfo_width()) // 2}+{(window.winfo_screenheight() - window.winfo_height()) // 2}")
+
+    def keybind_button(parent: tk.BaseWidget, column: int, row: int, variable: tk.Variable):
+        ttk.Button(
+            parent,
+            text="Set",
+            command=lambda: record_keybind(parent, variable)
+        ).grid(column=column, row=row, sticky="ew", padx=2)
+    
+
     ttk.Label(input_base_frame, text="Activate keybind  ").grid(column=0, row=0, sticky="ew")
+    keybind_button(input_base_frame, 1, 0, stored_vars["input:activate@key"])
     ttk.Entry(input_base_frame, textvariable=stored_vars["input:activate@key"]).grid(column=2, row=0, sticky="ew")
     infobutton(input_base_frame, 3, 0, "Hold this button to record your voice.")
     ttk.Label(input_base_frame, text="Reject keybind  ").grid(column=0, row=1, sticky="ew")
+    keybind_button(input_base_frame, 1, 1, stored_vars["input:reject@key"])
     ttk.Entry(input_base_frame, textvariable=stored_vars["input:reject@key"]).grid(column=2, row=1, sticky="ew")
     infobutton(input_base_frame, 3, 1, "Press this button at any time to cancel a message.")
     ttk.Label(input_base_frame, text="Radio keybind  ").grid(column=0, row=2, sticky="ew")
+    keybind_button(input_base_frame, 1, 2, stored_vars["input:radio_modifier@key"])
     ttk.Entry(input_base_frame, textvariable=stored_vars["input:radio_modifier@key"]).grid(column=2, row=2, sticky="ew")
     infobutton(input_base_frame, 3, 2, "Press this button to toggle sending messages over the radio.")
     ttk.Label(input_base_frame, text="Autosend  ").grid(column=0, row=3, sticky="ew")
@@ -1243,42 +1380,64 @@ def _open_settings_impl():
     add_listbox(input_base_frame, 5, "Blocked keys", "Keys that should be blocked while the submission process is ongoing. Typically these keys will be blocked for 10-100ms.", stored_vars["input:blocked_keys@list@string"])
     expanding_frame(input_base_frame, row=6)
 
+    # The name of the stored variables are how everything gets typechecked when saving
+    # Before the @ is the path of the variable. It is an aribtrary number of section names, separated by colons, with the key name
+    # being the last value before the @.
+    # After the @ is the typestr of the variable.
+    # There are primitives: bool, int, float, key, string
+    #   Primitives are what they say on the tin. Bools are booleans, ints are integer numbers, (no decimals allowed!)
+    #   floats are any number, keys are either keybinds or combinations, and strings are just strings.
+    # Generics: list
+    #   After the keyword 'list' is another @ and the type the list contains. This can be another list.
+    # And literals: literal
+    #   After the keyword 'literal', create a list of strings separated by | and wrapped inside of a single quote:
+    #   @literal'one literal value|a second one|a third one|wow, so many literal values!'
+
     stored_vars["output:output_method@literal'hwnd|say|chat'"] = tk.StringVar(value=config["output"]["output_method"])
     stored_vars["output:hwnd_settings:automation_id@int"] = tk.StringVar(value=str(config["output"]["hwnd_settings"]["automation_id"]))
     stored_vars["output:hwnd_settings:show_speech_indicator@bool"] = tk.BooleanVar(value=config["output"]["hwnd_settings"]["show_speech_indicator"])
     stored_vars["output:say_settings:delay_ms@float"] = tk.StringVar(value=str(config["output"]["say_settings"]["delay_ms"]))
     stored_vars["output:chat_settings:chat_delay@float"] = tk.StringVar(value=str(config["output"]["chat_settings"]["chat_delay"]))
     stored_vars["output:chat_settings:chat_key@key"] = tk.StringVar(value=config["output"]["chat_settings"]["chat_key"])
+    stored_vars["output:use_clipboard@bool"] = tk.BooleanVar(value=config["output"]["use_clipboard"])
+    stored_vars["output:radio_prefix@string"] = tk.StringVar(value=config["output"]["radio_prefix"])
     output_base_frame.columnconfigure(0, weight=0)
     output_base_frame.columnconfigure(1, weight=1)
     output_base_frame.columnconfigure(2, weight=0)
-    ttk.Label(output_base_frame, text="Output method  ").grid(column=0, row=0, sticky="ew")
+    ttk.Label(output_base_frame, text="Use clipboard").grid(column=0, row=0, sticky="ew")
+    make_checkbox(output_base_frame, 2, 0, stored_vars["output:use_clipboard@bool"])
+    infobutton(output_base_frame, 3, 0, "Disable if you want to keep your clipboard clean. This setting only affects \"say\" and \"chat\"!")
+    ttk.Label(output_base_frame, text="Radio prefix").grid(column=0, row=1, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:radio_prefix@string"]).grid(column=2, row=1, sticky="ew")
+    infobutton(output_base_frame, 3, 1, "The prefix added when the radio key is used. Change this if the server doesn't use ; as the radio key.")
+    
+    ttk.Label(output_base_frame, text="Output method  ").grid(column=0, row=2, sticky="ew")
     combobox = ttk.Combobox(output_base_frame, values=("hwnd", "say", "chat"), textvariable=stored_vars["output:output_method@literal'hwnd|say|chat'"])
-    combobox.grid(column=2, row=0, sticky="ew")
+    combobox.grid(column=2, row=2, sticky="ew")
     combobox.state(["readonly"])
-    infobutton(output_base_frame, 3, 0, "HWND is the fastest. It uses the text entry panel using the command \"Say\". Say is less fast. It uses the same method as HWND, but it directly copies and pastes the transcript in instead of using windows functions to set the value exactly. Chat is the slowest. It uses the TGUI input dialogue to enter text.")
+    infobutton(output_base_frame, 3, 2, "HWND is the fastest. It uses the text entry panel using the command \"Say\". Say is less fast. It uses the same method as HWND, but it directly copies and pastes the transcript in instead of using windows functions to set the value exactly. Chat is the slowest. It uses the TGUI input dialogue to enter text.")
     
-    ttk.Label(output_base_frame, text="HWND settings:", font=text_font).grid(column=0, row=1, sticky="ew")
-    ttk.Label(output_base_frame, text="  Automation id  ").grid(column=0, row=2, sticky="ew")
-    ttk.Entry(output_base_frame, textvariable=stored_vars["output:hwnd_settings:automation_id@int"]).grid(column=2, row=2, sticky="ew")
-    infobutton(output_base_frame, 3, 2, "The automation id of the chat bar. This is typically set for you, and doesn't need to be changed. See userconfig.toml for an explanation of how to find this.")
-    ttk.Label(output_base_frame, text="  Show typing indicator  ").grid(column=0, row=3, sticky="ew")
-    make_checkbox(output_base_frame, 2, 3, stored_vars["output:hwnd_settings:show_speech_indicator@bool"])
-    infobutton(output_base_frame, 3, 3, "Should a typing indicator be shown while you are speaking? This sets the chat bar to \"Say \"...\"\"")
+    ttk.Label(output_base_frame, text="HWND settings:", font=text_font).grid(column=0, row=3, sticky="ew")
+    ttk.Label(output_base_frame, text="  Automation id  ").grid(column=0, row=4, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:hwnd_settings:automation_id@int"]).grid(column=2, row=4, sticky="ew")
+    infobutton(output_base_frame, 3, 4, f"The automation id of the chat bar. This is typically set for you, and doesn't need to be changed. See the config file ({shared.CONFIG_FILENAME}) for an explanation of how to find this.")
+    ttk.Label(output_base_frame, text="  Show typing indicator  ").grid(column=0, row=5, sticky="ew")
+    make_checkbox(output_base_frame, 2, 5, stored_vars["output:hwnd_settings:show_speech_indicator@bool"])
+    infobutton(output_base_frame, 3, 5, "Should a typing indicator be shown while you are speaking? This sets the chat bar to \"Say \"...\"\"")
 
-    ttk.Label(output_base_frame, text="Say settings:", font=text_font).grid(column=0, row=4, sticky="ew")
-    ttk.Label(output_base_frame, text="  Delay (ms)  ").grid(column=0, row=5, sticky="ew")
-    ttk.Entry(output_base_frame, textvariable=stored_vars["output:say_settings:delay_ms@float"]).grid(column=2, row=5, sticky="ew")
-    infobutton(output_base_frame, 3, 5, "The delay between focusing the chat bar and pasting in the transcript. Increase if you run into issues with dropped inputs.")
+    ttk.Label(output_base_frame, text="Say settings:", font=text_font).grid(column=0, row=6, sticky="ew")
+    ttk.Label(output_base_frame, text="  Delay (ms)  ").grid(column=0, row=7, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:say_settings:delay_ms@float"]).grid(column=2, row=7, sticky="ew")
+    infobutton(output_base_frame, 3, 7, "The delay between focusing the chat bar and pasting in the transcript. Increase if you run into issues with dropped inputs.")
     
-    ttk.Label(output_base_frame, text="Chat settings:", font=text_font).grid(column=0, row=6, sticky="ew")
-    ttk.Label(output_base_frame, text="  Delay (s)  ").grid(column=0, row=7, sticky="ew")
-    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_delay@float"]).grid(column=2, row=7, sticky="ew")
-    infobutton(output_base_frame, 3, 7, "The delay between opening the chat window and pasting in the transcript. Increase if you run into issues with dropped inputs.")
-    ttk.Label(output_base_frame, text="  Chat key  ").grid(column=0, row=8, sticky="ew")
-    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_key@key"]).grid(column=2, row=8, sticky="ew")
-    infobutton(output_base_frame, 3, 8, "The key that opens the TGUI chat window.")
-    expanding_frame(output_base_frame, row=9)
+    ttk.Label(output_base_frame, text="Chat settings:", font=text_font).grid(column=0, row=8, sticky="ew")
+    ttk.Label(output_base_frame, text="  Delay (s)  ").grid(column=0, row=9, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_delay@float"]).grid(column=2, row=9, sticky="ew")
+    infobutton(output_base_frame, 3, 9, "The delay between opening the chat window and pasting in the transcript. Increase if you run into issues with dropped inputs.")
+    ttk.Label(output_base_frame, text="  Chat key  ").grid(column=0, row=10, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_key@key"]).grid(column=2, row=10, sticky="ew")
+    infobutton(output_base_frame, 3, 10, "The key that opens the TGUI chat window.")
+    expanding_frame(output_base_frame, row=11)
 
     stored_vars["meta:model@string"] = tk.StringVar(value=config["meta"]["model"])
     stored_vars["meta:path_to_model@string"] = tk.StringVar(value=config["meta"]["path_to_model"])
@@ -1606,10 +1765,53 @@ class ConfigError(Exception):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+_config_machine_key_to_human_map: dict[str, str] = {
+    "output:use_clipboard": "Use clipboard"
+}
+
+_config_machine_key_to_explain_map: dict[str, str] = {
+    "output:use_clipboard": "Allow STT to use your clipboard. Try enabling or disabling this if you run into issues with dropped inputs."
+}
+
+def config_machine_key_to_human(keychain: list[typing.Any]) -> str|None:
+    key = ":".join(keychain)
+    return _config_machine_key_to_human_map.get(key)
+
+def config_machine_key_to_explanation(keychain: list[typing.Any]) -> str|None:
+    key = ":".join(keychain)
+    return _config_machine_key_to_explain_map.get(key)
+
+# Raised when the key does not exist
+class ConfigNoexistError(ConfigError):
+    def __init__(self, key_name: str, parent: typing.Any, *args, **kwargs):
+        self.key_name = key_name
+        self.chain = config_make_cfgsrc_rawctx(parent, key_name)
+        self.human_readable_str = config_machine_key_to_human(self.chain)
+        self.explanation = config_machine_key_to_explanation(self.chain)
+        super().__init__(*args, **kwargs)
+
+    def chain_without_key(self) -> list[str]:
+        if len(self.chain) == 0:
+            return []
+        new = self.chain.copy()
+        new.pop()
+        return new
+
 # Raised when the final object is not of expected type
 class ConfigTypeError(ConfigError):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, key_name: str, parent: typing.Any, expected_type: type, value, *args, **kwargs):
+        self.key_name = key_name
+        self.chain = config_make_cfgsrc_rawctx(parent, key_name)
+        self.expected_type = expected_type
+        self.value = value
         super().__init__(*args, **kwargs)
+        
+    def chain_without_key(self) -> list[str]:
+        if len(self.chain) == 0:
+            return []
+        new = self.chain.copy()
+        new.pop()
+        return new
 
 # Raised when traversing the tree failed
 class ConfigTraversalError(ConfigError):
@@ -1725,12 +1927,16 @@ def get_cfgsrc(obj) -> list[str]:
         CONFIGOBJ_METADATA[id(obj)] = []
     return CONFIGOBJ_METADATA[id(obj)]
 
-def config_make_cfgsrc_ctx(obj, key: str) -> str:
+def config_make_cfgsrc_rawctx(obj, key: str) -> list[str]:
     src = get_cfgsrc(obj).copy()
     src.append(key)
-    for i, val in enumerate(src):
-        src[i] = f"\"{val}\""
-    return " -> ".join(src)
+    return src    
+
+def config_make_cfgsrc_ctx(obj, key: str) -> str:
+    chain = config_make_cfgsrc_rawctx(obj, key)
+    for i, val in enumerate(chain):
+        chain[i] = f"\"{val}\""
+    return ":".join(chain)
 
 def config_has_key(cfgobj: dict, key: str) -> bool:
     return cfgobj.get(key) is not None
@@ -1738,9 +1944,9 @@ def config_has_key(cfgobj: dict, key: str) -> bool:
 def config_get_string(cfgobj: dict, key: str) -> str:
     val = cfgobj.get(key)
     if val is None:
-        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+        raise ConfigNoexistError(key, cfgobj, f"Couldn't get key {config_make_cfgsrc_ctx(cfgobj, key)}")
     if type(val) is not str:
-        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be str, was {type(val).__name__}")
+        raise ConfigTypeError(key, cfgobj, str, val, f"Expected {config_make_cfgsrc_ctx(val, key)} to be str, was {type(val).__name__}")
     get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
     get_cfgsrc(val).append(key)
     return val
@@ -1748,9 +1954,9 @@ def config_get_string(cfgobj: dict, key: str) -> str:
 def config_get_bool(cfgobj: dict, key: str) -> bool:
     val = cfgobj.get(key)
     if val is None:
-        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+        raise ConfigNoexistError(key, cfgobj, f"Couldn't get key {config_make_cfgsrc_ctx(cfgobj, key)}")
     if type(val) is not bool:
-        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be bool, was {type(val).__name__}")
+        raise ConfigTypeError(key, cfgobj, bool, val, f"Expected {config_make_cfgsrc_ctx(val, key)} to be bool, was {type(val).__name__}")
     get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
     get_cfgsrc(val).append(key)
     return val
@@ -1758,9 +1964,9 @@ def config_get_bool(cfgobj: dict, key: str) -> bool:
 def config_get_number(cfgobj: dict, key: str) -> float:
     val = cfgobj.get(key)
     if val is None:
-        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+        raise ConfigNoexistError(key, cfgobj, f"Couldn't get key {config_make_cfgsrc_ctx(cfgobj, key)}")
     if type(val) is not int and type(val) is not float:
-        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be int or float, was {type(val).__name__}")
+        raise ConfigTypeError(key, cfgobj, float, val, f"Expected {config_make_cfgsrc_ctx(val, key)} to be int or float, was {type(val).__name__}")
     get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
     get_cfgsrc(val).append(key)
     return float(val)
@@ -1768,9 +1974,9 @@ def config_get_number(cfgobj: dict, key: str) -> float:
 def config_get_list(cfgobj: dict, key: str) -> list:
     val = cfgobj.get(key)
     if val is None:
-        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+        raise ConfigNoexistError(key, cfgobj, f"Couldn't get key {config_make_cfgsrc_ctx(cfgobj, key)}")
     if type(val) is not list:
-        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be a list, was {type(val).__name__}")
+        raise ConfigTypeError(key, cfgobj, list, val, f"Expected {config_make_cfgsrc_ctx(val, key)} to be a list, was {type(val).__name__}")
     get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
     get_cfgsrc(val).append(key)
     return val
@@ -1778,9 +1984,9 @@ def config_get_list(cfgobj: dict, key: str) -> list:
 def config_get_dict(cfgobj: dict, key: str) -> dict:
     val = cfgobj.get(key)
     if val is None:
-        raise ConfigError(f"Couldn't get key {config_make_cfgsrc_ctx(val, key)}")
+        raise ConfigNoexistError(key, cfgobj, f"Couldn't get key {config_make_cfgsrc_ctx(cfgobj, key)}")
     if type(val) is not dict:
-        raise ConfigTypeError(f"Expected {config_make_cfgsrc_ctx(val, key)} to be a dict, was {type(val).__name__}")
+        raise ConfigTypeError(key, cfgobj, dict, val, f"Expected {config_make_cfgsrc_ctx(val, key)} to be a dict, was {type(val).__name__}")
     get_cfgsrc(val).extend(get_cfgsrc(cfgobj))
     get_cfgsrc(val).append(key)
     return val
@@ -1832,27 +2038,29 @@ def parse_priority(prio: str) -> float:
     return base_prio + secondary_prio
 
 def _load_filters_from_config():
+    global INIT_PROCESSING_CONFIGFILE
+    INIT_PROCESSING_CONFIGFILE = shared.FILTERCONFIG_FILENAME
     incepted_filters: set[str] = set()
     print(f"Loading filters from config file {shared.FILTERCONFIG_FILENAME}")
     config = load_configdict_from_filename(shared.FILTERCONFIG_FILENAME, shared.FILTERCONFIG_BACKUP_FILENAME)
     for name, filter in config.items():
         if type(filter) is not dict:
-            raise ConfigTypeError(f"Section {name} isn't a dictionary. Did you mean to write\n[{name}] ?")
+            raise ConfigTypeError(name, config, dict, filter, f"Section {name} isn't a dictionary. Did you mean to write\n[{name}] ?")
         get_cfgsrc(filter).extend(get_cfgsrc(config))
         get_cfgsrc(filter).append(name)
+        title = config_get_string(filter, "title")
         has_single = config_has_key(filter, "action")
         has_double = config_has_key(filter, "actions")
         if has_single and has_double:
-            raise ConfigError(f"Attempted to create a filter with both an \"action\" and with \"actions\". Only define one of them in filter \"{name}\"")
+            raise ConfigError(f"While creating the filter \"{name}\" (titled {title}), found both \"action\" and \"actions\". Only define one of them.")
         if not has_single and not has_double:
-            raise ConfigError(f"Attempted to create a filter which lacked both an \"action\" and an \"actions\" field in filter \"{name}\"")
-        title = config_get_string(filter, "title")
+            raise ConfigError(f"While creating the filter \"{name}\" (titled {title}), found neither \"action\" and \"actions\". At least one action must be defined for any filter.")
         parsed_actions: list[ApplyableAction] = []
         def _get_args_dict(container) -> dict[str, typing.Any]:
             if config_has_key(container, "args"):
                 args = copy.deepcopy(config_get_dict(container, "args"))
                 if args.get("invoker") is not None:
-                    raise ConfigError(f"Can't define an \"invoker\" field in \"args\" for filter \"{name}\"")
+                    raise ConfigError(f"While creating the filter \"{name}\" (titled {title}), found a field named \"invoker\" in the \"args\" section. \"invoker\" is a reserved keyword and must be removed.")
                 return args
             return {}
         if has_single:
@@ -1863,9 +2071,9 @@ def _load_filters_from_config():
             parsed_actions.append(TransformAction(FILTERS, priority, config_get_string(filter, "action"), args))
         elif has_double:
             actions = config_get_list(filter, "actions")
-            for action_name in actions:
+            for i, action_name in enumerate(actions):
                 if type(action_name) is not str:
-                    raise ConfigTypeError(f"Action {action_name} is not a string; instead is {type(action_name).__name__}")
+                    raise ConfigTypeError(f"[{i}]", actions, str, action_name, f"Action {action_name} is not a string; instead is {type(action_name).__name__}")
                 action = config_get_dict(filter, action_name)
                 typ = config_get_string(action, "type")
                 priority = 0
@@ -1886,12 +2094,12 @@ def _load_filters_from_config():
                     elif mode == "disable":
                         parsed_actions.append(SelfishAction(FILTERS, priority, filter_to_apply))
                     else:
-                        raise ConfigError(f"Attempted to create an action of type \"{typ}\" with an invalid mode of \"{mode}\", expected \"enable\" or \"disable\" for action {config_make_cfgsrc_ctx(action, action_name)}")
+                        raise ConfigError(f"While creating the filter \"{name}\" (titled {title}), an action of type {typ} was created with an invalid mode: \"{mode}\". Valid modes are \"enable\" or \"disable\". (in action {config_make_cfgsrc_ctx(action, action_name)})")
                 elif typ == "prompt":
                     prompt_to_set = config_get_string(action, "prompt")
                     parsed_actions.append(SetPromptAction(FILTERS, priority, prompt_to_set))
                 else:
-                    raise ConfigError(f"Attempted to create an action of type \"{typ}\". Expected \"script\", \"prompt\", or \"type\" for action {config_make_cfgsrc_ctx(action, action_name)}")
+                    raise ConfigError(f"While creating the filter \"{name}\" (titled {title}), an action of type \"{typ}\" was found. Expected \"script\", \"prompt\", or \"type\" (in action {config_make_cfgsrc_ctx(action, action_name)})")
         activation = FilterActivation("unbound", True)
         if config_has_key(filter, "bind"):
             activation.keybind = config_get_string(filter, "bind")
@@ -1963,6 +2171,8 @@ model_keywords: list[str] = []
 model_prompt: str = _fallback_prompt()
 
 def load_settings_from_config():
+    global INIT_PROCESSING_CONFIGFILE
+    INIT_PROCESSING_CONFIGFILE = shared.CONFIG_FILENAME
     print(f"Loading from config file {shared.CONFIG_FILENAME}")
     config = load_configdict_from_filename(shared.CONFIG_FILENAME, shared.CONFIG_BACKUP_FILENAME)
     print(config)
@@ -1991,20 +2201,20 @@ def load_settings_from_config():
     set_control(config_get_string(input, "reject"), "reject", on_reject_press_handler, release=on_reject_release_handler)
     set_control(config_get_string(input, "radio_modifier"), "radio", on_radio_press_handler, release=on_radio_release_handler)
     default_blocked_keys = config_get_list(input, "blocked_keys")
-    for key in default_blocked_keys:
+    for i, key in enumerate(default_blocked_keys):
         if type(key) is not str:
-            raise ConfigTypeError(f"Expected blocked_keys to be a list of strings, got {type(key).__name__}")
+            raise ConfigTypeError(f"[{i}]", default_blocked_keys, str, key, f"Expected blocked_keys to be a list of strings, got {type(key).__name__}")
     setup_default_blocked_keys(default_blocked_keys)
     global CHOSEN_MODEL
     CHOSEN_MODEL = config_get_string(meta, "model").strip().lower()
     if CHOSEN_MODEL != "none" and CHOSEN_MODEL != "parakeet" and CHOSEN_MODEL != "granite" and not CHOSEN_MODEL.endswith(".py"):
-        raise ConfigError(f"Expected \"model\" in \"meta\" to be either none, parakeet, granite, or a python file, instead it was \"{CHOSEN_MODEL}\"")
+        raise ConfigError(f"Expected \"model\" in \"meta\" to be either none, parakeet, granite, or a python file, instead it was \"{CHOSEN_MODEL}\". To use a custom model, ensure the path to the file ends in .py and see an example in data/models/parakeetv2.py")
     global model_prompt
     model_prompt = config_get_string(meta, "prompt")
     keywords = config_get_list(meta, "keywords")
-    for word in keywords:
+    for i, word in enumerate(keywords):
         if type(word) is not str:
-            raise ConfigTypeError(f"Expected keywords to be a list of strings, instead got a {type(word).__name__}")
+            raise ConfigTypeError(f"[{i}]", keywords, str, word, f"Expected keywords to be a list of strings, instead got a {type(word).__name__}")
         model_keywords.append(word)
     shared.DEFAULT_WINDOW_WIDTH = int(config_get_number(meta, "window_width"))
     shared.DEFAULT_WINDOW_HEIGHT = int(config_get_number(meta, "window_height"))
@@ -2023,6 +2233,10 @@ def load_settings_from_config():
     global use_hwnd
     global hwnd_speech_indicator
     global hwnd_automation_id
+    global USE_CLIPBOARD
+    global RADIO_PREFIX
+    USE_CLIPBOARD = config_get_bool(output, "use_clipboard")
+    RADIO_PREFIX = config_get_string(output, "radio_prefix")
     output_method = config_get_string(output, "output_method")
     if output_method == "say":
         use_say = True
@@ -2042,7 +2256,7 @@ def load_settings_from_config():
         hwnd_automation_id = int(config_get_number(hwnd_settings, "automation_id"))
         hwnd_speech_indicator = config_get_bool(hwnd_settings, "show_speech_indicator")
     else:
-        raise ConfigError(f"Output method should be either \"say\" or \"chat\", was \"{output_method}\"")
+        raise ConfigError(f"Expected the output method to be one of \"say\", \"chat\", or \"hwnd\" in \"output -> output_method\", instead it was \"{output_method}\"")
     _load_filters_from_config()
     
 background = Configurable(label_frame)
@@ -2226,30 +2440,50 @@ def colorize(val: str, time: float):
     background.config_and_apply(bg=val)(_recolor, time)
 
 def submit_chat(transcript: str):
-    pyperclip.copy(transcript)
-    controller.press(chat_key)
-    controller.release(chat_key)
-    time.sleep(chat_delay)
-    with controller.pressed(pynput.keyboard.Key.ctrl):
-        controller.press('v')
-        controller.release('v')
-    time.sleep(0.1)
-    controller.press(pynput.keyboard.Key.enter)
-    controller.release(pynput.keyboard.Key.enter)
-    time.sleep(0.1)
+    if USE_CLIPBOARD:
+        pyperclip.copy(transcript)
+        press_and_release_key(chat_key)
+        time.sleep(chat_delay)
+        press_key("ctrl")
+        time.sleep(0.02)
+        press_and_release_key("v")
+        time.sleep(0.02)
+        release_key("ctrl")
+        press_and_release_key("enter")
+        time.sleep(chat_delay)
+    else:
+        split_text = list(transcript)
+        press_and_release_key(chat_key)
+        time.sleep(chat_delay)
+        for char in split_text:
+            press_and_release_key(char)
+        time.sleep(chat_delay)
+        press_and_release_key("enter")
+        time.sleep(chat_delay)
 
 def submit_say(transcript: str):
     doublequote = '"'
     singlequote = "'"
-    pyperclip.copy(f"Say \"{transcript.replace(doublequote, singlequote)}\"")
-    press_and_release_key("tab")
-    time.sleep(say_sleep_ms)
-    press_key("ctrl")
-    press_and_release_key("v")
-    release_key("ctrl")
-    press_and_release_key("enter")
-    press_and_release_key("tab")
-    time.sleep(say_sleep_ms)
+    what_to_say = f"Say \"{transcript.replace(doublequote, singlequote)}\""
+    if USE_CLIPBOARD:
+        pyperclip.copy(what_to_say)
+        press_and_release_key("tab")
+        time.sleep(say_sleep_ms)
+        press_key("ctrl")
+        press_and_release_key("v")
+        release_key("ctrl")
+        press_and_release_key("enter")
+        press_and_release_key("tab")
+        time.sleep(say_sleep_ms)
+    else:
+        chars = list(what_to_say)
+        press_and_release_key("tab")
+        time.sleep(say_sleep_ms)
+        for char in chars:
+            press_and_release_key(char)
+        press_and_release_key("enter")
+        press_and_release_key("tab")
+        time.sleep(say_sleep_ms)
 
 WM_SETTEXT = 0x000C
 WM_KEYDOWN = 0x0100
@@ -2401,11 +2635,19 @@ def ask_for_auto_chatbox():
             FOUND_NEW_AUTOMATION_HWND.set()
             global AUTOMATION_TEXTEDIT
             AUTOMATION_TEXTEDIT = AutomationTextEdit(edit_obj, edit_obj.handle, pid)
-            ask_and_change_automation_id(edit_obj.automation_id())
+            ask_and_change_automation_id(get_automation_id_from_obj(edit_obj))
             return
         stop_current_highlight()
     else:
         bar.end()
+
+def get_automation_id_from_obj(obj) -> int:
+    aid = obj.automation_id()
+    if aid is None:
+        raise TypeError(f"Got None automation_id from {obj}")
+    if not isinstance(aid, int):
+        raise TypeError(f"Attempted to get the automation_id from {obj}, got {aid} of type {type(aid).__name__}")
+    return aid
 
 class ShittyLoadingBar:
     def __init__(self, title: str, text: str, destroy_callback: typing.Callable[["ShittyLoadingBar"], typing.Any], w: int | None = None, h: int | None = None):
@@ -2475,7 +2717,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
             row = tk.Frame(scroll_frame, bd=1, relief="solid")
             row.pack(fill="x", pady=2)
             
-            name_label = tk.Label(row, text=f"ID {edit.automation_id()}", anchor="w")
+            name_label = tk.Label(row, text=f"ID {get_automation_id_from_obj(edit)}", anchor="w")
             name_label.pack(side="left", fill="x", expand=True, padx=6)
 
             def _highlight_wrap(edit_obj=edit):
@@ -2486,7 +2728,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
                     window.after(0, refresh)
 
             def select(edit_obj):
-                auto_id = int(edit_obj.automation_id())
+                auto_id = int(get_automation_id_from_obj(edit_obj))
                 if hwnd_automation_id != auto_id:
                     ask_and_change_automation_id(auto_id)
                 FOUND_NEW_AUTOMATION_HWND.set()
@@ -2709,15 +2951,15 @@ def release_key(key: str):
     _perform_keyboard_action(keyboard.send, key, False, True)
 
 def block_problematic_inputs():
-    print("Blocking input...")
     with kblock:
+        print("Blocking input...")
         for mvni in DEFAULT_TO_BLOCK:
             for alias in mvni.aliases():
                 BLOCKED_PRESSABLES[alias] = mvni
 
 def unblock_problematic_inputs():
-    print("Unblocking input...")
     with kblock:
+        print("Unblocking input...")
         for mvni in BLOCKED_PRESSABLES.values():
             if mvni.was_modified:
                 if mvni.is_pressed:
@@ -2738,7 +2980,8 @@ def submit():
     tk_config(label, text=transcript)
     print("--- Submitting transcript")
     colorize("green", 1)
-    block_problematic_inputs()
+    block_problematic_inputs() # should sync with kblock, past this point all keys are blocked
+                               # possible message queue shenanigans?
     success = threading.Event()
     def perform_submission():
         nonlocal transcript
@@ -2747,8 +2990,8 @@ def submit():
             radio = IS_RADIO
             if radio:
                 label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
-                if not (transcript.startswith(";") or transcript.startswith(":")):
-                    transcript = "; " + transcript
+                if not (transcript.startswith(RADIO_PREFIX) or transcript.startswith(":")):
+                    transcript = f"{RADIO_PREFIX} " + transcript
             if use_say:
                 submit_say(transcript)
             elif use_hwnd:
@@ -2758,13 +3001,14 @@ def submit():
         except:
             raise
         finally:
-            unblock_problematic_inputs()
+            unblock_problematic_inputs() # finally, keys are unblocked AFTER submission is done,
+                                         # also synchronized on kblock
             IS_RADIO = False
             set_radio_colors()
         success.set()
     spawn_thread(perform_submission)
     def wait_and_unblock():
-        time.sleep(5)
+        time.sleep(max(chat_delay * 5, 5)) # should avoid issues with massive chat delays
         if success.is_set():
             return
         unblock_problematic_inputs()
@@ -2866,19 +3110,18 @@ _glob_mouse_listener: pynput.mouse.Listener = None # type: ignore
 
 @shared.must_recover((pynput._util.win32.SystemHook.SuppressException,))
 def on_click(x: int, y: int, button: pynput.mouse.Button, pressed: bool, dummy):
+    if CONTROLS_DISABLED:
+        return
     bind = Pressable(MouseButton(button.name))
-    allow_through = True
     with kblock:
         if bind in BLOCKED_PRESSABLES:
-            allow_through = False
+            _glob_mouse_listener.suppress_event() # type: ignore
     if bind in CONTROLBUTTONS_BY_KEY:
         control = CONTROLBUTTONS_BY_KEY[bind]
         if control.is_mouse():
             control.press() if pressed else control.release()
             if control.should_suppress():
-                allow_through = False
-    if not allow_through:
-        _glob_mouse_listener.suppress_event() # type: ignore
+                _glob_mouse_listener.suppress_event() # type: ignore
 
 _special_scancode_map: dict[int, dict[str, int]] = {
     75: {"left": 75, "4": 80081350, "numpad 4": 80081350},
@@ -2906,6 +3149,8 @@ BLOCKED_PRESSABLES: dict[Pressable, ModifyableVirtualNamedInput] = {}
 @shared.must_recover()
 @synchronized_with(kblock)
 def on_key(event: keyboard.KeyboardEvent) -> bool:
+    if CONTROLS_DISABLED:
+        return True
     if event.name is not None:
         bind = Pressable(KeyButton(translate_special_scancode(event.name, event.scan_code)))
     else:
@@ -3152,6 +3397,39 @@ class FilterActivationCallback:
         print(f"Released FilterActivationCallback for {self.filter.title}")
         self.pressed = False
 
+INIT_PROCESSING_CONFIGFILE = "THE INIATILIZER IS NOT LOADING A CONFIG FILE. IF YOU SEE THIS TEXT, MAKE AN ISSUE REPORT"
+
+def filter_and_make_readable_init_exception(e: Exception):
+    if not isinstance(e, ConfigError) and not isinstance(e, tomllib.TOMLDecodeError):
+        return
+    def set_init_cancel_text(val: str):
+        print(f"Setting cancellation text: {val}")
+        global INIT_GIVEUP_REASON
+        INIT_GIVEUP_REASON = val
+        tk_config(label, text=f"Init cancelled due to config error:\n{val}")
+    if isinstance(e, ConfigNoexistError):
+        set_init_cancel_text(f"The option \"{e.key_name}\" in the section \"{' -> '.join(e.chain_without_key())}\" was not set. Provide a value in {INIT_PROCESSING_CONFIGFILE} or delete {INIT_PROCESSING_CONFIGFILE} to regenerate it.")
+    elif isinstance(e, ConfigTypeError):
+        value_type = e.expected_type.__name__
+        if e.expected_type is dict:
+            value_type = "a section, such as [output] or [output.say_settings]"
+        elif e.expected_type is float:
+            value_type = "a number (without quotes)"
+        elif e.expected_type is str:
+            value_type = "a string (text in quotes, such as \"this\")"
+        elif e.expected_type is bool:
+            value_type = "true or false, without quotes"
+        elif e.expected_type is list:
+            value_type = "a list, such as [1, 2, 3] or [\"a\", \"b\", \"c\"]"
+        set_init_cancel_text(f"Expected the option \"{e.key_name}\" in the section \"{' -> '.join(e.chain_without_key())}\" to be {value_type}, instead got `{e.value}`, which is a {type(e.value).__name__}.  Fix the value in {INIT_PROCESSING_CONFIGFILE} or delete {INIT_PROCESSING_CONFIGFILE} to regenerate it.")
+    elif isinstance(e, tomllib.TOMLDecodeError):
+        tip = ""
+        if f"{e}".lower().startswith("illegal character '\\n'"):
+            tip = " (Did you finish all strings with a quote? They should look like this: \"this is a string\")"
+        set_init_cancel_text(f"Couldn't load the config file {INIT_PROCESSING_CONFIGFILE}: {e}{tip}")
+    spawn_thread(lambda: messagebox.showerror("Config error", f"An error was made in the config file. Check {INIT_PROCESSING_CONFIGFILE} for any mistakes. To see the issue, look at the speech-to-text window."))
+    raise shared.ReportExceptionCancellationError()
+
 @shared.diagnose_entry
 def init():
     if last_version() is None:
@@ -3162,6 +3440,7 @@ def init():
         shared.record_exception(e, context)
         giveup_init(f"Encountered an exception in stage {InitState(INIT_STATE).as_human_readable_string()}: ({type(e).__name__}) {e}")
         loading_finished.set()
+        filter_and_make_readable_init_exception(e)
     shared.add_exception_hook("model_loading", on_exception)
     loading_finished = threading.Event()
     def init_worker():

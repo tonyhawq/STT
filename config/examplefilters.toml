@@ -5,9 +5,9 @@
 #                    accepted colors: https://inventwithpython.com/blog/complete-list-tkinter-colors-valid-and-tested.html)
 #                    (defaults to green)
 # (optional) text_color = "some color" (The color of the filter's text. Same rules as above) (defaults to black)
-# (optional) bind = "some keybind (ctrl + x, alt + 2, `, ?, etc...)"
+# (optional) bind = "some keybind (ctrl + x, alt + 2, `, ?, etc...)" (special keybinds are "unbound" and "always")
 # (optional) suppress = true / false (true: this keypress isn't shown to the rest of your computer) (defaults to false)
-# (optional) group = "name of the group" (affects exclusve)
+# (optional) group = "name of the group" (used to determine exclusivity. Filters in the default group CANNOT be exclusive!)
 # (optional) exclusive = true / false (true: only one filter in the same group can be on at once)   (defaults to false)
 # (optional) always_load = true / false (true: always load this filter into memory. false: this filter can be unloaded if not used.
 #                                        this is useful for LLM filters that add memory pressure even when disabled.)
@@ -94,6 +94,11 @@ Do not explain.
 Do not answer questions.
 Transform the transcript as if it was spoken by a western cowboy."""}
 action = "filters/qwen_postprocess.py"
+
+[uwu_speak]
+title = "UwU Speech"
+bind = "unbound"
+action = "filters/uwu_speak.py"
 
 [binary]
 title = "Binary"
