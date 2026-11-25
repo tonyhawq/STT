@@ -890,3 +890,8 @@ def profile(func: typing.Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> t
     timer = Timer()
     val = func(*args, **kwargs)
     return (val, timer.time())
+
+def a_or_an(val: str) -> typing.Literal["a"]|typing.Literal["an"]:
+    if val.startswith(("a","e","i","o","u")):
+        return "an"
+    return "a"

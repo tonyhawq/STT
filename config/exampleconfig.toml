@@ -38,6 +38,8 @@ radio_prefix = ";"
 # sending the message. Increase this
 # if you run into issues.
 delay_ms = 100
+# Enable this if you are playing on a server with the new fancy chat bar. (/TG/)
+fancy_command_bar = true
 
 [output.chat_settings]
 chat_key = "t"

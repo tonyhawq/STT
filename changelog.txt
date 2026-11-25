@@ -14,6 +14,7 @@ Date: 2026-11-24
     - Adds a Qwen2.5-1.5B LLM postprocessing filter
     - Adds priority to filters
     - Adds a GUI to change config options
+    - Adds a setup wizard on first boot
     - Adds an embedded python runtime (replaces the installer with a full runtime)
     - Adds onboarding text on first launch
     - Adds an option to not clobber clipboard

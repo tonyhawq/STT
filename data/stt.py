@@ -927,6 +927,7 @@ class Control:
         
 autosend = False
 USE_CLIPBOARD = False
+IS_CHAT_FANCY = False
 RADIO_PREFIX = ";"
 use_say = False
 use_hwnd = False
@@ -982,6 +983,9 @@ def _open_settings_impl():
         raise RuntimeError("_open_settings_impl called while SETTINGS_WINDOW is not None")
     SETTINGS_WINDOW = shared.TopLevel(master=root, w=600, h=500)
     SETTINGS_WINDOW.title("Settings")
+    SETTINGS_WINDOW.focus_force()
+    SETTINGS_WINDOW.attributes('-topmost', True)
+    SETTINGS_WINDOW.after_idle(SETTINGS_WINDOW.attributes, '-topmost', False)
     
     with open(shared.CONFIG_FILENAME, "r") as f:
         config = tomlkit.load(f)
@@ -1047,6 +1051,9 @@ def _open_settings_impl():
             else:
                 raise TypeError(f"Unknown typestr {typestr}")
         vars: dict[str, tk.Variable | list[tk.StringVar]] = SETTINGS_WINDOW.vars # type: ignore
+        unique_critical_keys: set[str] = set([typing.cast(tk.StringVar, vars["input:activate@key"]).get(), typing.cast(tk.StringVar, vars["input:reject@key"]).get(), typing.cast(tk.StringVar, vars["input:radio_modifier@key"]).get()])
+        if len(unique_critical_keys) != 3 and "unbound" not in unique_critical_keys:
+            raise ConfigError("Do not set activate, reject, or radio modifier to be the same key. If you want to unbind them, enter unbound as their key.")
         for typ, var in vars.items():
             typ = typing.cast(str, typ)
             path = typ.split(":")
@@ -1064,7 +1071,7 @@ def _open_settings_impl():
                 else:
                     value = convert_type(var.get(), extension)
             except TypeError as e:
-                raise TypeError(f"Saving \"{file}\" (in {path[0]}) which is a/n {extension}: {e}")
+                raise TypeError(f"Saving \"{file}\" (in {path[0]}) which is {shared.a_or_an(extension)} {extension}: {e}")
             current_step = config
             for next_step in path:
                 try:
@@ -1091,6 +1098,7 @@ def _open_settings_impl():
         try:
             save_to_cfgmem()
             if unmodified == config:
+                resume_INIT()
                 SETTINGS_WINDOW.destroy()
                 SETTINGS_WINDOW = None
                 return
@@ -1105,6 +1113,7 @@ def _open_settings_impl():
                     raise RuntimeError("Saving encountered an error.") from e
                 spawn_thread(reraise)
                 return
+        resume_INIT()
         SETTINGS_WINDOW.destroy()
         SETTINGS_WINDOW = None
         
@@ -1158,17 +1167,521 @@ def _open_settings_impl():
         tab.rowconfigure(row, weight=1)
         tk.Frame(tab).grid(column=0, row=row)
 
+    def setup_wizard():
+        global SETTINGS_WINDOW
+
+        if SETTINGS_WINDOW is None:
+            raise RuntimeError("SETTINGS_WINDOW is None")
+
+        wizard = tk.Toplevel(SETTINGS_WINDOW)
+        wizard.title("Setup Wizard")
+        wizard.geometry("500x350")
+        wizard.resizable(False, False)
+        wizard.transient(SETTINGS_WINDOW)
+        wizard.grab_set()
+
+        # References to existing configuration variables.
+        output_method: tk.StringVar = stored_vars["output:output_method@literal'hwnd|say|chat'"] # type: ignore
+        fancy_bar: tk.BooleanVar = stored_vars["output:say_settings:fancy_command_bar@bool"] # type: ignore
+        say_delay: tk.DoubleVar = stored_vars["output:say_settings:delay_ms@float"] # type: ignore
+        chat_delay: tk.DoubleVar = stored_vars["output:chat_settings:chat_delay@float"] # type: ignore
+        chat_key: tk.StringVar = stored_vars["output:chat_settings:chat_key@key"] # type: ignore
+
+        activate: tk.StringVar = stored_vars["input:activate@key"] # type: ignore
+        reject: tk.StringVar = stored_vars["input:reject@key"] # type: ignore
+        radio: tk.StringVar = stored_vars["input:radio_modifier@key"] # type: ignore
+
+        # Keep track of the current wizard page.
+        current_step = 0
+        steps = []
+
+        # Main content frame. Only one step is displayed at a time.
+        content = ttk.Frame(wizard, padding=20)
+        content.pack(fill="both", expand=True)
+
+        button_frame = ttk.Frame(wizard, padding=(20, 0, 20, 15))
+        button_frame.pack(fill="x")
+
+        def set_wizard_geometry(width: int, height: int):
+            wizard.update_idletasks()
+
+            old_width = wizard.winfo_width()
+            old_height = wizard.winfo_height()
+            old_x = wizard.winfo_x()
+            old_y = wizard.winfo_y()
+
+            center_x = old_x + old_width // 2
+            center_y = old_y + old_height // 2
+
+            new_x = center_x - width // 2
+            new_y = center_y - height // 2
+
+            wizard.geometry(f"{width}x{height}+{new_x}+{new_y}")
+
+        def clear_content():
+            for widget in content.winfo_children():
+                widget.destroy()
+
+        def make_header(title: str, description=None):
+            ttk.Label(
+                content,
+                text=title,
+                font=("TkDefaultFont", 18, "bold"),
+                wraplength=440
+            ).pack(pady=(10, 15))
+
+            if description:
+                ttk.Label(
+                    content,
+                    text=description,
+                    wraplength=440,
+                    justify="center"
+                ).pack(pady=(0, 20))
+
+        def get_previous_step():
+            if current_step == 0:
+                return None
+            if current_step == 1:
+                return 0
+            if current_step == 2:
+                return 0
+            if current_step == 3:
+                return 1
+            if current_step == 4:
+                if selected_server == "ss13":
+                    return 1
+                return 2
+            if current_step == 5:
+                return 4
+            return None
+
+        def go_back():
+            previous = get_previous_step()
+            if previous is not None:
+                show_step(previous)
+
+        def make_navigation(back: bool=True, next_command: typing.Callable | None=None, next_text: str="Next"):
+            for widget in button_frame.winfo_children():
+                widget.destroy()
+
+            if back and get_previous_step() is not None:
+                ttk.Button(
+                    button_frame,
+                    text="Back",
+                    command=go_back
+                ).pack(side="left")
+
+            if next_command:
+                ttk.Button(
+                    button_frame,
+                    text=next_text,
+                    command=next_command
+                ).pack(side="right")
+
+        def show_step(step: int):
+            nonlocal current_step
+            current_step = step
+            clear_content()
+
+            if step == 4:  # Keybind configuration
+                set_wizard_geometry(650, 600)
+            elif step == 5:
+                set_wizard_geometry(500, 700)
+            else:
+                set_wizard_geometry(500, 350)
+
+            steps[step]()
+
+        def add_entry(label: str, variable: tk.Variable, parent=content):
+            frame = ttk.Frame(parent)
+            frame.pack(fill="x", pady=8)
+
+            ttk.Label(frame, text=label).pack(anchor="w")
+
+            ttk.Entry(
+                frame,
+                textvariable=variable
+            ).pack(fill="x", pady=(3, 0))
+
+        def add_keybind(label: str, variable: tk.Variable, default: str, info: str, parent=content):
+            frame = ttk.Frame(parent)
+            frame.pack(fill="x", pady=10)
+
+            ttk.Label(
+                frame,
+                text=label,
+                font=("TkDefaultFont", 11, "bold")
+            ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+
+            ttk.Button(
+                frame,
+                text="Change",
+                command=lambda: record_keybind(wizard, variable)
+            ).grid(row=1, column=0, padx=(0, 5))
+
+            ttk.Entry(
+                frame,
+                textvariable=variable,
+                width=20
+            ).grid(row=1, column=1, padx=5)
+
+            ttk.Button(
+                frame,
+                text=f"Reset ({default})",
+                command=lambda: variable.set(default)
+            ).grid(row=1, column=2, padx=5)
+
+            ttk.Label(
+                frame,
+                text=info,
+                wraplength=400
+            ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(3, 0))
+
+        # ---------------------------------------------------------
+        # Step 0: Choose server.
+        # ---------------------------------------------------------
+
+        selected_server = None
+
+        def server_step():
+            make_header(
+                "Welcome to Speech To Text!",
+                "First, which game are you playing?"
+            )
+
+            choices = ttk.Frame(content)
+            choices.pack(pady=20)
+
+            ttk.Button(
+                choices,
+                text="SS13",
+                width=18,
+                command=lambda: choose_server("ss13")
+            ).pack(side="left", padx=10)
+
+            ttk.Button(
+                choices,
+                text="SS14",
+                width=18,
+                command=lambda: choose_server("ss14")
+            ).pack(side="left", padx=10)
+
+            make_navigation(back=False)
+
+        def choose_server(server):
+            nonlocal selected_server
+            selected_server = server
+            if server == "ss14":
+                output_method.set("chat")
+                show_step(2)
+            else:
+                show_step(1)
+
+        # ---------------------------------------------------------
+        # Step 1: SS13 fancy command bar.
+        # ---------------------------------------------------------
+
+        def fancy_bar_step():
+            make_header(
+                "Fancy TGUI Command Bar",
+                "Does your SS13 server have the fancy TGUI command bar?"
+            )
+
+            ttk.Button(
+                content,
+                text="Yes",
+                width=20,
+                command=lambda: choose_fancy_bar(True)
+            ).pack(pady=8)
+
+            ttk.Button(
+                content,
+                text="No",
+                width=20,
+                command=lambda: choose_fancy_bar(False)
+            ).pack(pady=8)
+
+            make_navigation()
+
+        def choose_fancy_bar(enabled):
+            fancy_bar.set(enabled)
+
+            if enabled:
+                output_method.set("say")
+                show_step(3)
+            else:
+                output_method.set("hwnd")
+                show_step(4)
+
+        # ---------------------------------------------------------
+        # Step 2: SS14 chat configuration.
+        # ---------------------------------------------------------
+
+        def ss14_chat_step():
+            make_header(
+                "Chat Configuration",
+                "Choose your chat key and the delay. Typically, this delay can be very small. Increase if you run into issues."
+            )
+
+            add_entry("Chat key:", chat_key)
+            add_entry("Chat delay (seconds):", chat_delay)
+
+            make_navigation(next_command=lambda: show_step(4))
+
+        # ---------------------------------------------------------
+        # Step 3: SS13 say configuration.
+        # ---------------------------------------------------------t
+
+        def ss13_say_step():
+            make_header(
+                "Say Configuration",
+                "Make sure your chat bar is set to be in Say mode, not Command or OOC mode! Choose the delay between opening the chat bar and sending the message. Increase if you run into issues."
+            )
+
+            add_entry("Chat delay (milliseconds):", say_delay)
+
+            make_navigation(next_command=lambda: show_step(4))
+
+        # ---------------------------------------------------------
+        # Step 4: Keybind configuration.
+        # ---------------------------------------------------------
+
+        def keybind_step():
+            make_header(
+                "Configure Your Keybinds",
+                "These are the controls you'll use while playing. (for any keybind, you can write \"unbound\" to unbind it!)"
+            )
+
+            controls_frame = ttk.Frame(content)
+            controls_frame.pack(expand=True)
+
+            add_keybind(
+                "Activate keybind",
+                activate,
+                "x2",
+                "Hold this key to record your voice.",
+                parent=controls_frame
+            )
+
+            add_keybind(
+                "Reject keybind",
+                reject,
+                "x1",
+                "Press this key to cancel a message.",
+                parent=controls_frame
+            )
+
+            add_keybind(
+                "Radio keybind",
+                radio,
+                "ctrl",
+                "Hold this key to send messages over the radio.",
+                parent=controls_frame
+            )
+
+            make_navigation(next_command=lambda: show_step(5))
+
+        # ---------------------------------------------------------
+        # Step 5: Final confirmation.
+        # ---------------------------------------------------------
+
+        def confirmation_step():
+            make_header(
+                "Setup Complete!",
+                "Review your configuration before restarting Speech To Text."
+            )
+
+            summary = ttk.LabelFrame(
+                content,
+                text="Your Configuration",
+                padding=15
+            )
+            summary.pack(fill="x", padx=15, pady=5)
+
+            summary.columnconfigure(0, weight=1)
+
+            def add_summary_row(label, value, row):
+                ttk.Label(
+                    summary,
+                    text=label,
+                    font=("TkDefaultFont", 10, "bold")
+                ).grid(row=row, column=0, sticky="w", pady=5)
+
+                ttk.Label(
+                    summary,
+                    text=value,
+                    wraplength=300,
+                    justify="right"
+                ).grid(row=row, column=1, sticky="e", padx=(15, 0), pady=5)
+
+            row = 0
+
+            add_summary_row(
+                "Server:",
+                "SS14" if selected_server == "ss14" else "SS13",
+                row
+            )
+            row += 1
+
+            add_summary_row(
+                "Chat mode:",
+                output_method.get().upper(),
+                row
+            )
+            row += 1
+
+            if selected_server == "ss14":
+                add_summary_row(
+                    "Chat key:",
+                    chat_key.get(),
+                    row
+                )
+                row += 1
+
+                add_summary_row(
+                    "Chat delay:",
+                    f"{chat_delay.get()} seconds",
+                    row
+                )
+                row += 1
+
+            elif selected_server == "ss13":
+                add_summary_row(
+                    "Fancy command bar:",
+                    "Yes" if fancy_bar.get() else "No",
+                    row
+                )
+                row += 1
+
+                if fancy_bar.get():
+                    add_summary_row(
+                        "Say delay:",
+                        f"{say_delay.get()} ms",
+                        row
+                    )
+                    row += 1
+
+            ttk.Separator(summary).grid(
+                row=row,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=8
+            )
+            row += 1
+
+            ttk.Label(
+                summary,
+                text="Keybinds",
+                font=("TkDefaultFont", 11, "bold")
+            ).grid(row=row, column=0, columnspan=2, sticky="w", pady=5)
+            row += 1
+
+            add_summary_row("Activate:", activate.get(), row)
+            row += 1
+
+            add_summary_row("Reject:", reject.get(), row)
+            row += 1
+
+            add_summary_row("Radio:", radio.get(), row)
+
+            ttk.Label(
+                content,
+                text=(
+                    "Your configuration will be saved when you confirm. "
+                    "Speech To Text will then restart."
+                ),
+                wraplength=420,
+                justify="center"
+            ).pack(pady=12)
+
+            for widget in button_frame.winfo_children():
+                widget.destroy()
+
+            def confirm():
+                try:
+                    save_to_file()
+                except Exception as e:
+                    shared.record_exception(e)
+                    messagebox.showerror(
+                        "Couldn't save",
+                        f"Couldn't save the configuration:\n"
+                        f"{type(e).__name__}: {e}",
+                        parent=wizard
+                    )
+                    return
+
+                wizard.grab_release()
+                wizard.destroy()
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
+            def deny():
+                wizard.grab_release()
+                wizard.destroy()
+                quit_normal()
+
+            ttk.Button(
+                button_frame,
+                text="Back",
+                command=go_back
+            ).pack(side="left")
+
+            ttk.Button(
+                button_frame,
+                text="Deny & Exit",
+                command=deny
+            ).pack(side="right", padx=(5, 0))
+
+            ttk.Button(
+                button_frame,
+                text="Confirm & Restart",
+                command=confirm
+            ).pack(side="right")
+
+        # Register all steps.
+        steps.extend([
+            server_step,
+            fancy_bar_step,
+            ss14_chat_step,
+            ss13_say_step,
+            keybind_step,
+            confirmation_step
+        ])
+
+        # Open the first step.
+        show_step(0)
+
+        wizard.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: (
+                wizard.grab_release(),
+                wizard.destroy()
+            )
+        )
+
+        wizard.focus_force()
+        wizard.update_idletasks()
+        wizard.geometry(f"+{(wizard.winfo_screenwidth() - wizard.winfo_width()) // 2}+{(wizard.winfo_screenheight() - wizard.winfo_height()) // 2}")
+
     onboarding_tab.columnconfigure(0, weight=1)
     header_font = ("TkDefaultFont", 14)
     text_font = ("TkDefaultFont", 10)
-    ttk.Label(onboarding_tab, text="Welcome to Speech To Text!", font=("TkDefaultFont", 20, "bold")).grid(column=0, row=0, sticky="new")
-    ttk.Label(onboarding_tab, text="How do I use STT?", font=header_font).grid(column=0, row=1, sticky="new")
-    lblwrap(ttk.Label(onboarding_tab, text="It's simple! Hold down the activate keybind (defaults to mousebutton4) to record your voice, and release it to send it in game!", font=text_font)).grid(column=0, row=2, sticky="new")
-    ttk.Label(onboarding_tab, text="What's a filter?", font=header_font).grid(column=0, row=3, sticky="new")
-    lblwrap(ttk.Label(onboarding_tab, text=f"Filters can change your text after you've said it. STT comes with a bunch of filters, especially for departmental radios! Just open {shared.FILTERCONFIG_FILENAME} and set some keybinds, or create your own filters.", font=text_font)).grid(column=0, row=4, sticky="new")
-    ttk.Label(onboarding_tab, text="What if I mess all my settings up?", font=header_font).grid(column=0, row=5, sticky="new")
-    lblwrap(ttk.Label(onboarding_tab, text=f"Just delete {shared.CONFIG_FILENAME} and relaunch STT!", font=text_font)).grid(column=0, row=6, sticky="new")
-    expanding_frame(onboarding_tab, row=7)
+    row = 0
+    ttk.Label(onboarding_tab, text="Welcome to Speech To Text!", font=("TkDefaultFont", 20, "bold")).grid(column=0, row=row, sticky="new")
+    row = row + 1
+    if IS_FIRST_BOOT:
+        ttk.Label(onboarding_tab, text="IS THIS YOUR FIRST TIME USING STT?", font=("TkDefaultFont", 15, "bold")).grid(column=0, row=row, sticky="new")
+        ttk.Label(onboarding_tab, text="CLICK THIS BUTTON TO SET IT UP!", font=("TkDefaultFont", 15, "bold")).grid(column=0, row=row + 1, sticky="new")
+        row = row + 2
+    tk.Button(onboarding_tab, text="Setup Wizard", font=header_font, command=setup_wizard).grid(column=0, row=row, sticky="n")
+    row = row + 1
+    ttk.Label(onboarding_tab, text="How do I use STT?", font=header_font).grid(column=0, row=row, sticky="new")
+    lblwrap(ttk.Label(onboarding_tab, text="It's simple! Hold down the activate keybind (defaults to mousebutton4) to record your voice, and release it to send it in game!", font=text_font)).grid(column=0, row=row + 1, sticky="new")
+    ttk.Label(onboarding_tab, text="What's a filter?", font=header_font).grid(column=0, row=row + 2, sticky="new")
+    lblwrap(ttk.Label(onboarding_tab, text=f"Filters can change your text after you've said it. STT comes with a bunch of filters, especially for departmental radios! Just open {shared.FILTERCONFIG_FILENAME} and set some keybinds, or create your own filters.", font=text_font)).grid(column=0, row=row +3, sticky="new")
+    ttk.Label(onboarding_tab, text="What if I mess all my settings up?", font=header_font).grid(column=0, row=row + 4, sticky="new")
+    lblwrap(ttk.Label(onboarding_tab, text=f"Just delete {shared.CONFIG_FILENAME} and relaunch STT!", font=text_font)).grid(column=0, row=row + 5, sticky="new")
+    expanding_frame(onboarding_tab, row=row + 6)
 
     def add_buttons(tab: tk.Frame) -> tk.Frame:
         base_frame = tk.Frame(tab)
@@ -1322,7 +1835,10 @@ def _open_settings_impl():
                 keys: list[str] = []
                 for key in captured_keys:
                     keys.append(modifier_names.get(key, key.lower()))
-                variable.set("+".join(sorted(keys)))
+                bind = "+".join(sorted(keys))
+                variable.set(bind)
+                if bind == "lmb" or bind == "rmb":
+                    spawn_thread(lambda: messagebox.showwarning("Bad keybind", "Don't set your keybind to just be left click. Seriously, this is a bad idea."))
                 close_window()
 
         def on_key_release(event: tk.Event):
@@ -1397,6 +1913,7 @@ def _open_settings_impl():
     stored_vars["output:hwnd_settings:automation_id@int"] = tk.StringVar(value=str(config["output"]["hwnd_settings"]["automation_id"]))
     stored_vars["output:hwnd_settings:show_speech_indicator@bool"] = tk.BooleanVar(value=config["output"]["hwnd_settings"]["show_speech_indicator"])
     stored_vars["output:say_settings:delay_ms@float"] = tk.StringVar(value=str(config["output"]["say_settings"]["delay_ms"]))
+    stored_vars["output:say_settings:fancy_command_bar@bool"] = tk.BooleanVar(value=bool(config["output"]["say_settings"]["fancy_command_bar"]))
     stored_vars["output:chat_settings:chat_delay@float"] = tk.StringVar(value=str(config["output"]["chat_settings"]["chat_delay"]))
     stored_vars["output:chat_settings:chat_key@key"] = tk.StringVar(value=config["output"]["chat_settings"]["chat_key"])
     stored_vars["output:use_clipboard@bool"] = tk.BooleanVar(value=config["output"]["use_clipboard"])
@@ -1429,15 +1946,18 @@ def _open_settings_impl():
     ttk.Label(output_base_frame, text="  Delay (ms)  ").grid(column=0, row=7, sticky="ew")
     ttk.Entry(output_base_frame, textvariable=stored_vars["output:say_settings:delay_ms@float"]).grid(column=2, row=7, sticky="ew")
     infobutton(output_base_frame, 3, 7, "The delay between focusing the chat bar and pasting in the transcript. Increase if you run into issues with dropped inputs.")
+    ttk.Label(output_base_frame, text="  Use fancy command bar?  ").grid(column=0, row=8, sticky="ew")
+    make_checkbox(output_base_frame, 2, 8, stored_vars["output:say_settings:fancy_command_bar@bool"])
+    infobutton(output_base_frame, 3, 8, "Enable this if you're playing on a server with a TGUI command bar. To ensure it works, enable the say option in the command bar.")
     
-    ttk.Label(output_base_frame, text="Chat settings:", font=text_font).grid(column=0, row=8, sticky="ew")
-    ttk.Label(output_base_frame, text="  Delay (s)  ").grid(column=0, row=9, sticky="ew")
-    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_delay@float"]).grid(column=2, row=9, sticky="ew")
-    infobutton(output_base_frame, 3, 9, "The delay between opening the chat window and pasting in the transcript. Increase if you run into issues with dropped inputs.")
-    ttk.Label(output_base_frame, text="  Chat key  ").grid(column=0, row=10, sticky="ew")
-    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_key@key"]).grid(column=2, row=10, sticky="ew")
-    infobutton(output_base_frame, 3, 10, "The key that opens the TGUI chat window.")
-    expanding_frame(output_base_frame, row=11)
+    ttk.Label(output_base_frame, text="Chat settings:", font=text_font).grid(column=0, row=9, sticky="ew")
+    ttk.Label(output_base_frame, text="  Delay (s)  ").grid(column=0, row=10, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_delay@float"]).grid(column=2, row=10, sticky="ew")
+    infobutton(output_base_frame, 3, 10, "The delay between opening the chat window and pasting in the transcript. Increase if you run into issues with dropped inputs.")
+    ttk.Label(output_base_frame, text="  Chat key  ").grid(column=0, row=11, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_key@key"]).grid(column=2, row=11, sticky="ew")
+    infobutton(output_base_frame, 3, 11, "The key that opens the TGUI chat window.")
+    expanding_frame(output_base_frame, row=12)
 
     stored_vars["meta:model@string"] = tk.StringVar(value=config["meta"]["model"])
     stored_vars["meta:path_to_model@string"] = tk.StringVar(value=config["meta"]["path_to_model"])
@@ -1898,10 +2418,14 @@ def _set_simple_control(aliases: list[Pressable], name: str, action: typing.Call
     CONTROLS[name] = control
     
 
-def set_control(hotkey: str, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool = False):
+def set_control(hotkey: str, name: str, action: typing.Callable, release: typing.Callable | None = None, _suppress: bool = False, _allow_unbindings: bool = False):
     buttons = Pressable.parse_hotkey(hotkey)
     print(f"making control with hotkey {buttons} and name {name}")
-    if len(buttons) < 1:
+    if len(buttons) <  1:
+        if _allow_unbindings:
+            print("v" * 5 + "-" * 20 + "v" * 5)
+            print(f"called set_control for control {name}  with an unbound hotkey {hotkey}!")
+            return
         raise RuntimeError(f"Invalid hotkey \"{hotkey}\", it contains no values.")
     if len(buttons) == 1:
         _set_simple_control(buttons[0], name, action, release, _suppress=_suppress)
@@ -2197,9 +2721,9 @@ def load_settings_from_config():
     global allow_cpu_asr
     allow_cpu_asr = not config_get_bool(meta, "warn_on_cpu")
     suppress_activate = config_get_bool(input, "activate_globally_blocked")
-    set_control(config_get_string(input, "activate"), "activate", on_activate_press_handler, release=on_activate_release_handler, _suppress=suppress_activate)
-    set_control(config_get_string(input, "reject"), "reject", on_reject_press_handler, release=on_reject_release_handler)
-    set_control(config_get_string(input, "radio_modifier"), "radio", on_radio_press_handler, release=on_radio_release_handler)
+    set_control(config_get_string(input, "activate"), "activate", on_activate_press_handler, release=on_activate_release_handler, _suppress=suppress_activate, _allow_unbindings = True)
+    set_control(config_get_string(input, "reject"), "reject", on_reject_press_handler, release=on_reject_release_handler, _allow_unbindings = True)
+    set_control(config_get_string(input, "radio_modifier"), "radio", on_radio_press_handler, release=on_radio_release_handler, _allow_unbindings = True)
     default_blocked_keys = config_get_list(input, "blocked_keys")
     for i, key in enumerate(default_blocked_keys):
         if type(key) is not str:
@@ -2235,6 +2759,7 @@ def load_settings_from_config():
     global hwnd_automation_id
     global USE_CLIPBOARD
     global RADIO_PREFIX
+    global IS_CHAT_FANCY
     USE_CLIPBOARD = config_get_bool(output, "use_clipboard")
     RADIO_PREFIX = config_get_string(output, "radio_prefix")
     output_method = config_get_string(output, "output_method")
@@ -2243,6 +2768,7 @@ def load_settings_from_config():
         use_hwnd = False
         global say_sleep_ms
         say_sleep_ms = config_get_number(say_settings, "delay_ms") / 1000
+        IS_CHAT_FANCY = config_get_bool(say_settings, "fancy_command_bar")
     elif output_method == "chat":
         use_say = False
         use_hwnd = False
@@ -2293,11 +2819,21 @@ class InitState(Enum):
         elif self == InitState.FINISHED:
             return "finished"
 
+# this is valid after version checking. Don't check it BEFORE THAT!!
+IS_FIRST_BOOT = False
+_allow_init_continuance = threading.Event()
+def pause_INIT():
+    _allow_init_continuance.clear()
+def resume_INIT():
+    _allow_init_continuance.set()
+def wait_for_INIT_unpause():
+    _allow_init_continuance.wait()
 INIT_STATE = InitState.PREINIT
 _init_state_changed = threading.Event()
 
 @shared.diagnose_entry(args=True, simple=True)
 def set_INIT_STATE(state: int | InitState):
+    _allow_init_continuance.wait()
     global INIT_STATE
     INIT_STATE = state
     _init_state_changed.set()
@@ -2462,9 +2998,12 @@ def submit_chat(transcript: str):
         time.sleep(chat_delay)
 
 def submit_say(transcript: str):
-    doublequote = '"'
-    singlequote = "'"
-    what_to_say = f"Say \"{transcript.replace(doublequote, singlequote)}\""
+    if IS_CHAT_FANCY:
+        what_to_say = transcript
+    else:
+        doublequote = '"'
+        singlequote = "'"
+        what_to_say = f"Say \"{transcript.replace(doublequote, singlequote)}\""
     if USE_CLIPBOARD:
         pyperclip.copy(what_to_say)
         press_and_release_key("tab")
@@ -3432,9 +3971,14 @@ def filter_and_make_readable_init_exception(e: Exception):
 
 @shared.diagnose_entry
 def init():
+    resume_INIT()
+    global IS_FIRST_BOOT
     if last_version() is None:
         fix_version_file(_version_filename_previous)
         spawn_thread(lambda: messagebox.showinfo("STT Onboarding", "It looks like it's your first time using speech to text! Open the settings (the gear in the top left) for more information, or read the README!"))
+        IS_FIRST_BOOT = True
+    else:
+        IS_FIRST_BOOT = False
     set_INIT_STATE(InitState.PRESETTINGS)
     def on_exception(e: Exception, context: str | None = None):
         shared.record_exception(e, context)
@@ -3474,6 +4018,10 @@ def init():
         def load_model_worker():
             load_model(loading_finished, can_spin)
         set_INIT_STATE(InitState.PREMODELLOADING)
+        if IS_FIRST_BOOT:
+            pause_INIT()
+            open_settings()
+        wait_for_INIT_unpause()
         spawn_thread(load_model_worker)
         data_arrived = threading.Event()
         def finished_checker():
