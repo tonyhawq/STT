@@ -1,4 +1,16 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.1.0
+Date: 2026-11-24
+  Name:
+    - Release 1.1
+  Headline:
+    - Setup wizard is even easier
+  Changes:
+    - Changes the wizard to always be the same width
+    - Adds an explanation for what the tgui fancy chat bar is
+  Bugfixes:
+    - Replaced assorted calls to tk.TopLevel with shared.TopLevel or shared.TopLevelCentered 
+---------------------------------------------------------------------------------------------------
 Version: 1.0.0
 Date: 2026-11-24
   Name:

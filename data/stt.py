@@ -159,7 +159,7 @@ def PHOTOIMAGE(file: str) -> tk.PhotoImage:
     try:
         return tk.PhotoImage(file=file)
     except Exception as e:
-        messagebox.showerror("Couldn't load STT", f"Couldn't load data/gear.png: ({type(e).__name__}) {e}")
+        messagebox.showerror("Couldn't load an image", f"Couldn't load {file}: ({type(e).__name__}) {e}")
         sys.exit(1)
 
 root = tk.Tk()
@@ -981,7 +981,7 @@ def _open_settings_impl():
     global SETTINGS_WINDOW
     if SETTINGS_WINDOW is not None:
         raise RuntimeError("_open_settings_impl called while SETTINGS_WINDOW is not None")
-    SETTINGS_WINDOW = shared.TopLevel(master=root, w=600, h=500)
+    SETTINGS_WINDOW = shared.TopLevelCentered(master=root, w=600, h=500)
     SETTINGS_WINDOW.title("Settings")
     SETTINGS_WINDOW.focus_force()
     SETTINGS_WINDOW.attributes('-topmost', True)
@@ -1202,22 +1202,6 @@ def _open_settings_impl():
         button_frame = ttk.Frame(wizard, padding=(20, 0, 20, 15))
         button_frame.pack(fill="x")
 
-        def set_wizard_geometry(width: int, height: int):
-            wizard.update_idletasks()
-
-            old_width = wizard.winfo_width()
-            old_height = wizard.winfo_height()
-            old_x = wizard.winfo_x()
-            old_y = wizard.winfo_y()
-
-            center_x = old_x + old_width // 2
-            center_y = old_y + old_height // 2
-
-            new_x = center_x - width // 2
-            new_y = center_y - height // 2
-
-            wizard.geometry(f"{width}x{height}+{new_x}+{new_y}")
-
         def clear_content():
             for widget in content.winfo_children():
                 widget.destroy()
@@ -1284,11 +1268,11 @@ def _open_settings_impl():
             clear_content()
 
             if step == 4:  # Keybind configuration
-                set_wizard_geometry(650, 600)
+                shared.resize_TopLevel(wizard, 650, 600)
             elif step == 5:
-                set_wizard_geometry(500, 700)
+                shared.resize_TopLevel(wizard, 650, 700)
             else:
-                set_wizard_geometry(500, 350)
+                shared.resize_TopLevel(wizard, 500, 350)
 
             steps[step]()
 
@@ -1401,9 +1385,16 @@ def _open_settings_impl():
                 command=lambda: choose_fancy_bar(False)
             ).pack(pady=8)
 
+            ttk.Button(
+                content,
+                text="What?",
+                width=20,
+                command=_show_tgui_fancy_command_bar_example
+            ).pack(pady=8)
+
             make_navigation()
 
-        def choose_fancy_bar(enabled):
+        def choose_fancy_bar(enabled: bool):
             fancy_bar.set(enabled)
 
             if enabled:
@@ -1412,6 +1403,46 @@ def _open_settings_impl():
             else:
                 output_method.set("hwnd")
                 show_step(4)
+
+        def _show_tgui_fancy_command_bar_example():
+            example = shared.TopLevel(wizard)
+            example.attributes('-topmost', True)
+            frame = tk.Frame(example)
+            frame.pack(padx=10, pady=10)
+        
+            label1 = tk.Label(frame, text="This is the fancy TGUI command bar")
+            label1.grid(row=0, column=0, padx=10, pady=5)
+        
+            image1 = PHOTOIMAGE("data/image_tgui_bar.png")
+            img_label1 = tk.Label(frame, image=image1)
+            img_label1.grid(row=1, column=0, padx=10)
+        
+            button1 = tk.Button(
+                frame,
+                text="I have this one",
+                command=lambda: choose_fancy_bar(True) is None and example.destroy()
+            )
+            button1.grid(row=2, column=0, padx=10, pady=10)
+        
+            label2 = tk.Label(frame, text="This is the normal TGUI command bar")
+            label2.grid(row=0, column=1, padx=10, pady=5)
+        
+            image2 = PHOTOIMAGE("data/image_hwnd_bar.png")
+            img_label2 = tk.Label(frame, image=image2)
+            img_label2.grid(row=1, column=1, padx=10)
+        
+            button2 = tk.Button(
+                frame,
+                text="I have this one",
+                command=lambda: choose_fancy_bar(False) is None and example.destroy()
+            )
+            button2.grid(row=2, column=1, padx=10, pady=10)
+        
+            example.image1 = image1 # type: ignore
+            example.image2 = image2 # type: ignore
+            example.focus_force()
+            example.update_idletasks()
+            example.geometry(f"+{(example.winfo_screenwidth() - example.winfo_width()) // 2}+{(example.winfo_screenheight() - example.winfo_height()) // 2}")
 
         # ---------------------------------------------------------
         # Step 2: SS14 chat configuration.
@@ -1459,7 +1490,7 @@ def _open_settings_impl():
                 "Activate keybind",
                 activate,
                 "x2",
-                "Hold this key to record your voice.",
+                "Hold this key to record your voice. Release to send your speech in game.",
                 parent=controls_frame
             )
 
@@ -1467,7 +1498,7 @@ def _open_settings_impl():
                 "Reject keybind",
                 reject,
                 "x1",
-                "Press this key to cancel a message.",
+                "Press this key to cancel a message. You can do this literally whenever, even while holding the activate keybind. If you mess up while talking, just hit this button.",
                 parent=controls_frame
             )
 
@@ -1475,7 +1506,7 @@ def _open_settings_impl():
                 "Radio keybind",
                 radio,
                 "ctrl",
-                "Hold this key to send messages over the radio.",
+                "Press this key while talking to toggle your radio.",
                 parent=controls_frame
             )
 
@@ -1789,7 +1820,7 @@ def _open_settings_impl():
 
     def record_keybind(parent, variable):
         disable_all_controls()
-        window = tk.Toplevel(parent)
+        window = shared.TopLevel(parent)
         window.title("Set keybind")
         window.transient(parent)
         window.grab_set()
@@ -2102,7 +2133,7 @@ class Changelog:
     @staticmethod
     @main_thread
     def show_logs(logs: list["Changelog"]):
-        window = shared.TopLevel(w=600, h=900)
+        window = shared.TopLevelCentered(w=600, h=900)
         window.title(f"Changelog")
         text = tk.Text(window, wrap="word")
         text.pack(side="left", fill="both", expand=True)
@@ -2163,7 +2194,7 @@ class Changelog:
 def show_changelogs_after(current: str):
     @main_thread
     def create_window() -> typing.Tuple[tk.Toplevel, tk.Text]:
-        window = shared.TopLevel(w=600, h=600)
+        window = shared.TopLevelCentered(w=600, h=600)
         window.title(f"Changelog")
         status_label = tk.Label(window, text="Loading changelog...", justify="center", font=("Arial", 10))
         status_label.pack(pady=(20, 10))
@@ -3194,7 +3225,7 @@ class ShittyLoadingBar:
             w = 450
         if h is None:
             h = 150
-        self.window = shared.TopLevel(w=w, h=h)
+        self.window = shared.TopLevelCentered(w=w, h=h)
         self.window.title(title)
         self.window.resizable(True, True)
 
@@ -3225,7 +3256,7 @@ def _fallback_get_dreamseeker_editbox_hwnd_raw_impl() -> bool:
     if FOUND_NEW_AUTOMATION_HWND.is_set():
         return False
     is_window_open = True
-    window = shared.TopLevel(w=700, h=500)
+    window = shared.TopLevelCentered(w=700, h=500)
     window_close_event = threading.Event()
     def window_close_hook():
         global SHOULD_LOOK_FOR_AUTOMATION_HWND

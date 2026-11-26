@@ -645,17 +645,33 @@ class PluginLoadingState(SharedLoadingState):
 
 _tracked_toplevels: list[tk.Toplevel] = []
 
-def TopLevel(*args, w: int, h: int, **kwargs) -> tk.Toplevel:
+def TopLevelCentered(*args, w: int, h: int, **kwargs) -> tk.Toplevel:
+    win = TopLevel(*args, **kwargs)
+    x_offset = (win.winfo_screenwidth() // 2) - (w // 2)
+    y_offset = (win.winfo_screenheight() // 2) - (h // 2)
+    win.geometry(f"{w}x{h}+{x_offset}+{y_offset}")
+    return win
+
+def TopLevel(*args, **kwargs) -> tk.Toplevel:
     win = tk.Toplevel(*args, **kwargs)
     _tracked_toplevels.append(win)
     def _destroy_wrapper(destroy=win.destroy):
         destroy()
         _tracked_toplevels.remove(win)
     win.destroy = _destroy_wrapper
-    x_offset = (win.winfo_screenwidth() // 2) - (w // 2)
-    y_offset = (win.winfo_screenheight() // 2) - (h // 2)
-    win.geometry(f"{w}x{h}+{x_offset}+{y_offset}")
     return win
+
+def resize_TopLevel(win: tk.Toplevel, w: int, h: int) -> None:
+    win.update_idletasks()
+    old_width = win.winfo_width()
+    old_height = win.winfo_height()
+    old_x = win.winfo_x()
+    old_y = win.winfo_y()
+    center_x = old_x + old_width // 2
+    center_y = old_y + old_height // 2
+    new_x = center_x - w // 2
+    new_y = center_y - h // 2
+    win.geometry(f"{w}x{h}+{new_x}+{new_y}")
 
 class ModelLoadingState(SharedLoadingState):
     def __init__(self,
@@ -721,7 +737,7 @@ class ModelLoadingState(SharedLoadingState):
     def run_pytorch_downloader(self):
         def worker():
             self.settext("Waiting for PyTorch version to be selected...")
-            window = TopLevel(w=700, h=500)
+            window = TopLevelCentered(w=700, h=500)
             def window_close_hook():
                 window.destroy()
                 self.quit()
@@ -807,7 +823,15 @@ class ModelLoadingState(SharedLoadingState):
                     ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                     capture_output=True, text=True, check=True
                 )
-                gpu_name = result.stdout.splitlines()[0].strip()
+            except Exception as e:
+                write_log(f"No NVIDIA GPU detected. ({type(e).__name__}) {e}")
+                gpu_var.set("No NVIDIA GPU detected")
+                driver_var.set("N/A")
+                recommendation_var.set("CPU Only")
+                self.tk_config(install_button, state="disabled")
+                return
+            gpu_name = result.stdout.splitlines()[0].strip()
+            try:
                 write_log(f"Found GPU {gpu_name}")
                 write_log("Detecting NVIDIA driver CUDA support...")
                 result = subprocess.run(
@@ -836,11 +860,19 @@ class ModelLoadingState(SharedLoadingState):
                     f"CUDA {cuda_tag[2]}.{cuda_tag[3:]} (PyTorch v{torch_version})"
                 )
             except Exception as e:
-                write_log(f"No NVIDIA GPU detected.")
-                gpu_var.set("No NVIDIA GPU detected")
-                driver_var.set("N/A")
-                recommendation_var.set("CPU Only")
-                self.tk_config(install_button, state="disabled")
+                write_log(f"CUDA detection warning: ({type(e).__name__}) {e}")
+                write_log("Assuming CUDA 12.8 as fallback.")
+
+                gpu_var.set(gpu_name)
+                driver_var.set("Unknown (assuming CUDA 12.8)")
+
+                cuda_version = 12.8
+                cuda_tag = "cu128"
+                torch_version = "2.11.0"
+
+                recommendation_var.set(
+                    f"CUDA 12.8 (PyTorch v{torch_version})"
+                )
             finally:
                 write_log(f"PyTorch install URL:")
                 write_log(f"  {suggested_cuda_URL()}")
