@@ -116,12 +116,14 @@ class MONITORINFO(ctypes.Structure):
         ("dwFlags", ctypes.wintypes.DWORD),
     ]
 
-def showwarning_at(title: str, message: str, x: int | None, y: int | None) -> tuple[int, int]:
+def showwarning_at(title: str, message: str, x: int | None, y: int | None, ack: "ExceptionAcknowledgedHook | None" = None) -> tuple[int, int]:
     global _warningbox_xvel
     global _warningbox_yvel
     unique_title = f"{title} : {uuid.uuid4()}"
     def show_box():
         messagebox.showwarning(unique_title, message)
+        if ack:
+            spawn_thread(ack, None)
     main_thread_async(show_box)
     hwnd = None
     for _ in range(500):
@@ -204,8 +206,10 @@ def record_exception(e: Exception, context: str | None = None) -> str:
         log.write(context)
     return filename
 
+ExceptionAcknowledgedHook = typing.Callable[[typing.Literal["CANCELLED"] | None], typing.Any]
+
 @diagnose_entry
-def _global_exception_handler(exception: Exception, context: str = "No context available."):
+def _global_exception_handler(exception: Exception, context: str = "No context available.", acknowledgement_hook: ExceptionAcknowledgedHook | None = None):
     try:
         filename = record_exception(exception, context)
         message = f"Encountered an exception: ({type(exception).__name__}) {exception}\nFull stacktrace available at \"data/current.log\" and \"data/{filename}\"."
@@ -220,9 +224,9 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
             if _mbox_time_elapsed() > 5:
                 MBOX_POS = None
             if MBOX_POS is None:
-                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = None, y = None)
+                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = None, y = None, ack=acknowledgement_hook)
             else:
-                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = MBOX_POS[0], y = MBOX_POS[1])
+                MBOX_POS = showwarning_at(title="Exception encountered", message=message, x = MBOX_POS[0], y = MBOX_POS[1], ack=acknowledgement_hook)
             MBOX_COUNT += 1
             if MBOX_COUNT > max_mbox_count:
                 CAN_SHOW_MBOX = False
@@ -260,7 +264,7 @@ def CancelExceptionReporting():
     raise ReportExceptionCancellationError("shared.CancelExceptionReporting was called.")
 
 @diagnose_entry
-def report_exception(e: Exception, context: str | None = None):
+def report_exception(e: Exception, context: str | None = None, acknowledgement_hook: ExceptionAcknowledgedHook | None = None):
     try:
         print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}")
         context = exception_to_filtered_traceback(e, context=context)
@@ -270,11 +274,13 @@ def report_exception(e: Exception, context: str | None = None):
                 hook(e, context)
             except ReportExceptionCancellationError as e2:
                 print(f"HOOK CANCELLED EXCEPTION REPORTING: {e2}")
+                if acknowledgement_hook:
+                    spawn_thread(acknowledgement_hook, "CANCELLED")
                 return
             except Exception as e2:
                 quit_error(f"An exception was encountered in exception hook {name} ({hook})", e2)
         print(f"GEH called")
-        main_thread_async(_global_exception_handler, e, context)
+        main_thread_async(_global_exception_handler, e, context, acknowledgement_hook)
     except Exception as e:
         quit_error(f"Encountered an exception ({type(e).__name__}) {e}", e)
 

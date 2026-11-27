@@ -4,10 +4,14 @@ Date: 2026-11-24
   Name:
     - Release 1.1
   Headline:
-    - Setup wizard is even easier
+    - SS14 integration
+  Features:
+    - Adds a NO LATENCY ss14 integration! This was accomplished by injecting a harmony plugin into the frame loop of the client
+    - Adds a hook to shared.report_exception to report when the user closes the error box
   Changes:
     - Changes the wizard to always be the same width
     - Adds an explanation for what the tgui fancy chat bar is
+    - Adds a list of fake phrases to the fake ASR model
   Bugfixes:
     - Replaced assorted calls to tk.TopLevel with shared.TopLevel or shared.TopLevelCentered 
 ---------------------------------------------------------------------------------------------------

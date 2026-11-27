@@ -19,8 +19,8 @@ blocked_keys = [
 ]
 
 [output]
-# Choose between "say", "chat", or "hwnd"
-# hwnd is the best option. There is near no
+# Choose between "say", "chat", "ss14", or "hwnd"
+# for ss13, hwnd is the best option. There is near no
 # latency. Say is second best, and chat
 # is the worst option. If you run into issues
 # with one of them, try the others and see if
@@ -59,6 +59,15 @@ automation_id = 0
 # Should the typing indicator show up while
 # you are recording your voice?
 show_speech_indicator = true
+
+[output.ss14_settings]
+# If the ss14 exe changes names, open the game, then
+# join a server and open task manager.
+# Look for processes called SS14. One should have children, and
+# that child should be the server you joined.
+# Right click the process and click properties, and copy the name
+# of the exe file here.
+client_exe = "SS14.Loader.exe"
 
 [meta]
 # Choose the ASR model you want to use.

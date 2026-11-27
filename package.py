@@ -2,6 +2,7 @@ import zipfile
 import re
 import os
 from pathlib import Path
+import subprocess
 
 class Packageable:
     def __init__(self, path: str = "", destination: str | None = None, ignore: "list[Packageable]" = [], is_dir: bool = False):
@@ -37,12 +38,15 @@ files_to_package: list[Packageable] = [
     Packageable.file("debug.bat", destination="data/debug.bat"),
     Packageable.file("run.bat", destination="data/run.bat"),
     Packageable.file("data/gear.png"),
+    Packageable.file("data/image_hwnd_bar.png"),
+    Packageable.file("data/image_tgui_bar.png"),
     Packageable.file("data/question_button.png"),
     Packageable.file("setup.bat"),
     Packageable.file("data/stt.py"),
     Packageable.file("data/shared.py"),
     Packageable.file("data/installer.py"),
     Packageable.file("data/changelog.txt"),
+    Packageable.directory("dotnet/built"),
     Packageable.directory("runtime"),
     Packageable.directory("filters", ignore=[Packageable.directory("filters/__pycache__")]),
     Packageable.directory("data/models", ignore=[Packageable.directory("data/models/__pycache__")])
@@ -93,6 +97,16 @@ if __name__ == "__main__":
         if bool(re.fullmatch(r'^\d+\.\d+\.\d+$', version)):
             break
         print("Does not match pattern \"x.x.x\".")
+    print(f"Building version \"{version}\"")
+    DOTNET_DIR = Path(__file__).resolve().parent / "dotnet"
+    result = subprocess.run(["cmd.exe", "/c", "build.bat"], cwd=DOTNET_DIR, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Got return code {result.returncode} when building dotnet dependencies! (in directory {DOTNET_DIR})")
+        print("STDOUT:")
+        print(result.stdout.strip())
+        print("STDERR:")
+        print(result.stderr.strip())
+        exit(1)
     print(f"Packaging version \"{version}\"")
     zip_filename = f"releases/STT_{version}.zip"
     zip_without_embedded_filename = f"releases/STT_{version}_NORUNTIME.zip"

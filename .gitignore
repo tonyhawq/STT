@@ -24,3 +24,12 @@ config/filters.toml
 runtime
 last_version.number
 filters/user
+dotnet/built/*
+dotnet/*/bin/Debug/net8.0/*
+dotnet/*/bin/Debug/net10.0/*
+dotnet/SS14Integration.App/obj*
+dotnet/SS14Integration.Bootstrap.App/obj*
+dotnet/SS14Integration.Plugin/obj*
+dotnet/logs/*
+dotnet/built/*
+!dotnet/built/0Harmony.dll

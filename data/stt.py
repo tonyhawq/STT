@@ -6,10 +6,14 @@ print("Starting...")
 try:
     print("Importing utilities...")
     import threading
+    import json
     import pynput
     import string
     import pyaudio
     import time
+    import queue
+    import subprocess
+    import webbrowser
     import wave
     import tomllib
     import tomlkit
@@ -30,6 +34,10 @@ try:
     import pynput._util.win32
     import importlib.util
     import pywinauto
+    import pywintypes
+    import win32file
+    import win32security
+    import win32pipe
     import ctypes.wintypes
     import inspect
     import copy
@@ -257,6 +265,14 @@ def tk_config(obj, **kwargs):
     hooks = _tk_config_hooks.get(obj, [])
     for hook in hooks:
         hook(obj, kwargs)
+
+def set_transient_label_text(text: str, wait_time: float, after_text: str):
+    tk_config(label, text=text)
+    def after():
+        time.sleep(wait_time)
+        if label.cget("text").strip() == text.strip():
+            tk_config(label, text=after_text)
+    spawn_thread(after)
 
 class ApplyableAction:
     DefaultAction: typing.ClassVar[typing.Callable[[str], str]] = shared.PluginNoAction
@@ -929,8 +945,13 @@ autosend = False
 USE_CLIPBOARD = False
 IS_CHAT_FANCY = False
 RADIO_PREFIX = ";"
-use_say = False
-use_hwnd = False
+class SubmissionMethod(Enum):
+    Chat = 1
+    Say = 2
+    HWND = 3
+    SS14 = 4
+
+SUBMISSION_METHOD: SubmissionMethod = SubmissionMethod.Chat
 hwnd_speech_indicator = False
 hwnd_automation_id: int = 0
 allow_version_checking = True
@@ -1181,11 +1202,12 @@ def _open_settings_impl():
         wizard.grab_set()
 
         # References to existing configuration variables.
-        output_method: tk.StringVar = stored_vars["output:output_method@literal'hwnd|say|chat'"] # type: ignore
+        output_method: tk.StringVar = stored_vars["output:output_method@literal'hwnd|say|chat|ss14'"] # type: ignore
         fancy_bar: tk.BooleanVar = stored_vars["output:say_settings:fancy_command_bar@bool"] # type: ignore
         say_delay: tk.DoubleVar = stored_vars["output:say_settings:delay_ms@float"] # type: ignore
         chat_delay: tk.DoubleVar = stored_vars["output:chat_settings:chat_delay@float"] # type: ignore
         chat_key: tk.StringVar = stored_vars["output:chat_settings:chat_key@key"] # type: ignore
+        client_exe: tk.StringVar = stored_vars["output:ss14_settings:client_exe@string"] # type: ignore
 
         activate: tk.StringVar = stored_vars["input:activate@key"] # type: ignore
         reject: tk.StringVar = stored_vars["input:reject@key"] # type: ignore
@@ -1356,7 +1378,7 @@ def _open_settings_impl():
             nonlocal selected_server
             selected_server = server
             if server == "ss14":
-                output_method.set("chat")
+                output_method.set("ss14")
                 show_step(2)
             else:
                 show_step(1)
@@ -1450,12 +1472,26 @@ def _open_settings_impl():
 
         def ss14_chat_step():
             make_header(
-                "Chat Configuration",
-                "Choose your chat key and the delay. Typically, this delay can be very small. Increase if you run into issues."
+                ".NET required",
             )
+            text = tk.Text(content, height=4, width=45, wrap="word", borderwidth=0, bg=root.cget("bg"))
+            text.pack(pady=(0, 20))
 
-            add_entry("Chat key:", chat_key)
-            add_entry("Chat delay (seconds):", chat_delay)
+            text.insert("end", "The .NET runtime is required to use the SS14 submission mode. ")
+            if is_dotnet_10_installed():
+                text.insert("end", "The good news is, you already have it!")
+            else:
+                text.insert("end", "Download it here. (https://dotnet.microsoft.com/en-us/download/dotnet/10.0)", "link")
+            
+            text.tag_config("link", foreground="#1a0dab", underline=True)
+
+            text.tag_bind("link", "<Button-1>", lambda e: webbrowser.open_new("https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/runtime-desktop-10.0.15-windows-x64-installer"))
+            text.tag_bind("link", "<Enter>", lambda e: text.config(cursor="hand2"))
+            text.tag_bind("link", "<Leave>", lambda e: text.config(cursor=""))
+
+            text.config(state="disabled")
+
+            add_entry("SS14 client exe:", client_exe)
 
             make_navigation(next_command=lambda: show_step(4))
 
@@ -1563,15 +1599,8 @@ def _open_settings_impl():
 
             if selected_server == "ss14":
                 add_summary_row(
-                    "Chat key:",
-                    chat_key.get(),
-                    row
-                )
-                row += 1
-
-                add_summary_row(
-                    "Chat delay:",
-                    f"{chat_delay.get()} seconds",
+                    "Client exe:",
+                    client_exe.get(),
                     row
                 )
                 row += 1
@@ -1758,11 +1787,19 @@ def _open_settings_impl():
     output_base_frame = add_buttons(output_tab)
     model_base_frame = add_buttons(model_tab)
     advanced_base_frame = add_buttons(advanced_tab)
-    def _create_infobutton(tab: tk.Widget, text: str) -> tk.Button:
-        return tk.Button(tab, image=QUESTION_ICON, relief="flat", bg="white", command=lambda: spawn_thread(lambda: messagebox.showinfo("Info", text)))
+    def _create_infobutton(tab: tk.Widget, text: str, *, dynamic_text: typing.Callable[[], str] | None = None) -> tk.Button:
+        if dynamic_text is None:
+            def show():
+                messagebox.showinfo("Info", text)
+        else:
+            def show():
+                created = dynamic_text()
+                print(f"Called show() with dynamic_text: {created}")
+                messagebox.showinfo("Info", created)
+        return tk.Button(tab, image=QUESTION_ICON, relief="flat", bg="white", command=lambda: spawn_thread(show))
 
-    def infobutton(tab: tk.Frame, column: int, row: int, text: str):
-        _create_infobutton(tab, text).grid(column=column, row=row, sticky="new")
+    def infobutton(tab: tk.Frame, column: int, row: int, text: str, *, dynamic_text: typing.Callable[[], str] | None = None):
+        _create_infobutton(tab, text, dynamic_text=dynamic_text).grid(column=column, row=row, sticky="new")
 
     def add_listbox(tab: tk.Frame, row: int, name: str, info: str, valuelist: list[str]):
         ttk.Label(tab, text=f"{name}  ").grid(column=0, row=row, sticky="nw")
@@ -1817,6 +1854,7 @@ def _open_settings_impl():
     stored_vars["input:autosend@bool"] = tk.BooleanVar(value=config["input"]["autosend"])
     stored_vars["input:activate_globally_blocked@bool"] = tk.BooleanVar(value=config["input"]["activate_globally_blocked"])
     stored_vars["input:blocked_keys@list@string"] = config["input"]["blocked_keys"]
+    stored_vars["output:ss14_settings:client_exe@string"] = tk.StringVar(value=config["output"]["ss14_settings"]["client_exe"])
 
     def record_keybind(parent, variable):
         disable_all_controls()
@@ -1940,7 +1978,7 @@ def _open_settings_impl():
     #   After the keyword 'literal', create a list of strings separated by | and wrapped inside of a single quote:
     #   @literal'one literal value|a second one|a third one|wow, so many literal values!'
 
-    stored_vars["output:output_method@literal'hwnd|say|chat'"] = tk.StringVar(value=config["output"]["output_method"])
+    stored_vars["output:output_method@literal'hwnd|say|chat|ss14'"] = tk.StringVar(value=config["output"]["output_method"])
     stored_vars["output:hwnd_settings:automation_id@int"] = tk.StringVar(value=str(config["output"]["hwnd_settings"]["automation_id"]))
     stored_vars["output:hwnd_settings:show_speech_indicator@bool"] = tk.BooleanVar(value=config["output"]["hwnd_settings"]["show_speech_indicator"])
     stored_vars["output:say_settings:delay_ms@float"] = tk.StringVar(value=str(config["output"]["say_settings"]["delay_ms"]))
@@ -1960,10 +1998,21 @@ def _open_settings_impl():
     infobutton(output_base_frame, 3, 1, "The prefix added when the radio key is used. Change this if the server doesn't use ; as the radio key.")
     
     ttk.Label(output_base_frame, text="Output method  ").grid(column=0, row=2, sticky="ew")
-    combobox = ttk.Combobox(output_base_frame, values=("hwnd", "say", "chat"), textvariable=stored_vars["output:output_method@literal'hwnd|say|chat'"])
+    combobox = ttk.Combobox(output_base_frame, values=("hwnd", "say", "chat", "ss14"), textvariable=stored_vars["output:output_method@literal'hwnd|say|chat|ss14'"])
     combobox.grid(column=2, row=2, sticky="ew")
     combobox.state(["readonly"])
-    infobutton(output_base_frame, 3, 2, "HWND is the fastest. It uses the text entry panel using the command \"Say\". Say is less fast. It uses the same method as HWND, but it directly copies and pastes the transcript in instead of using windows functions to set the value exactly. Chat is the slowest. It uses the TGUI input dialogue to enter text.")
+    _method_info_by_name = {
+        "hwnd": "HWND is only usable in SS13, and only if there's no fancy chat bar. It is the fastest and most reliable method, by far, though.",
+        "say": "Say is usable in SS13 with or without the fancy chat bar. It is slower than HWND, but it still works.",
+        "chat": "Chat is usable in SS13 or SS14. Extremely slow, unless you're willing to put up with dropped inputs.",
+        "ss14": "SS14 only works for SS14. It uses a C# plugin to directly send messages in game. It's instant and does not affect your movement, typing, or anything else. Requires the .net 10.0 SDK and only works for SS14."
+    }
+    def _get_dynamic_info_text():
+        return _method_info_by_name.get(
+            typing.cast(tk.StringVar, stored_vars["output:output_method@literal'hwnd|say|chat|ss14'"]).get(),
+            "Use HWND for SS13 unless it's on /TG/, then use say. Use SS14 for SS14, unless you don't have the .net SDK or it's buggy, then use chat."
+            ) + "\nWhich do I use?\nUse HWND for SS13 servers without the fancy command bar. Use Say for SS13 servers with the fancy command bar. Use SS14 or Chat for SS14."
+    infobutton(output_base_frame, 3, 2, text="", dynamic_text=_get_dynamic_info_text)
     
     ttk.Label(output_base_frame, text="HWND settings:", font=text_font).grid(column=0, row=3, sticky="ew")
     ttk.Label(output_base_frame, text="  Automation id  ").grid(column=0, row=4, sticky="ew")
@@ -2735,6 +2784,7 @@ def load_settings_from_config():
     say_settings = config_get_dict(output, "say_settings")
     chat_settings = config_get_dict(output, "chat_settings")
     hwnd_settings = config_get_dict(output, "hwnd_settings")
+    ss14_settings = config_get_dict(output, "ss14_settings")
     input = config_get_dict(config, "input")
     meta = config_get_dict(config, "meta")
     if config_has_key(meta, "verbose"):
@@ -2784,34 +2834,34 @@ def load_settings_from_config():
     path_to_model = config_get_string(meta, "path_to_model")
     global autosend
     autosend = config_get_bool(input, "autosend")
-    global use_say
-    global use_hwnd
     global hwnd_speech_indicator
     global hwnd_automation_id
     global USE_CLIPBOARD
     global RADIO_PREFIX
     global IS_CHAT_FANCY
+    global SUBMISSION_METHOD
     USE_CLIPBOARD = config_get_bool(output, "use_clipboard")
     RADIO_PREFIX = config_get_string(output, "radio_prefix")
     output_method = config_get_string(output, "output_method")
     if output_method == "say":
-        use_say = True
-        use_hwnd = False
+        SUBMISSION_METHOD = SubmissionMethod.Say
         global say_sleep_ms
         say_sleep_ms = config_get_number(say_settings, "delay_ms") / 1000
         IS_CHAT_FANCY = config_get_bool(say_settings, "fancy_command_bar")
     elif output_method == "chat":
-        use_say = False
-        use_hwnd = False
+        SUBMISSION_METHOD = SubmissionMethod.Chat
         global chat_key
         global chat_delay
         chat_key = config_get_string(chat_settings, "chat_key")
         chat_delay = config_get_number(chat_settings, "chat_delay")
     elif output_method == "hwnd":
-        use_say = False
-        use_hwnd = True
+        SUBMISSION_METHOD = SubmissionMethod.HWND
         hwnd_automation_id = int(config_get_number(hwnd_settings, "automation_id"))
         hwnd_speech_indicator = config_get_bool(hwnd_settings, "show_speech_indicator")
+    elif output_method == "ss14":
+        SUBMISSION_METHOD = SubmissionMethod.SS14
+        global TARGET_SS14_PROCESS_NAME
+        TARGET_SS14_PROCESS_NAME = config_get_string(ss14_settings, "client_exe")
     else:
         raise ConfigError(f"Expected the output method to be one of \"say\", \"chat\", or \"hwnd\" in \"output -> output_method\", instead it was \"{output_method}\"")
     _load_filters_from_config()
@@ -3006,6 +3056,323 @@ def colorize(val: str, time: float):
         obj.config(bg="white")
     background.config_and_apply(bg=val)(_recolor, time)
 
+_INTEGRATED_PYTHON_PIPE_PATH = r"\\.\pipe\python_tx_pipe"
+_INTEGRATED_CS_PIPE_PATH = r"\\.\pipe\cs_tx_pipe"
+_integrated_transmit_lock = threading.RLock()
+_integrated_receive_lock = threading.RLock()
+
+class SS14IntegrationState(Enum):
+    INTEGRATION_DISCONNECTED = 0
+    INTEGRATION_CONNECTED = 1
+
+SS14_STATE = SS14IntegrationState.INTEGRATION_DISCONNECTED
+_is_ss14_disconnected = threading.Event()
+
+def set_SS14_STATE(newstate: SS14IntegrationState):
+    global SS14_STATE
+    SS14_STATE = newstate
+    if newstate == SS14IntegrationState.INTEGRATION_DISCONNECTED:
+        IPClog("DISCONNECTED DUE TO set_SS14_STATE call with INTEGRATION_DISCONNECTED")
+        _is_ss14_disconnected.set()
+        set_transient_label_text(text="SS14 integration disconnected!", wait_time=5, after_text="Waiting...")
+    else:
+        IPClog("CONNECTED DUE TO set_SS14_STATE call with CONNECTED")
+        _is_ss14_disconnected.clear()
+        set_transient_label_text(text="SS14 integration connected!", wait_time=5, after_text="Waiting...")
+
+@synchronized_with(_integrated_transmit_lock)
+def send_pipe_message(message: str, typ: typing.Literal["text"] | typing.Literal["status"] | None = None):
+    if typ is None:
+        typ = "text"
+    _integrated_pipe_tx_messages.put(json.dumps({typ:message}))
+
+@synchronized_with(_integrated_receive_lock)
+def receive_pipe_message(timeout: float = 0.1) -> typing.Literal["OK"] | typing.Literal["STOPPED"] | typing.Literal["STARTED"] | str | None:
+    try:
+        return _integrated_pipe_rx_messages.get(block=True, timeout=timeout)
+    except queue.Empty:
+        return None
+
+def check_integration_heartbeat() -> bool:
+    send_pipe_message("@HEARTBEAT")
+    ack = receive_pipe_message()
+    if ack == "OK":
+        set_SS14_STATE(SS14IntegrationState.INTEGRATION_CONNECTED)
+        return True
+    set_SS14_STATE(SS14IntegrationState.INTEGRATION_DISCONNECTED)
+    return False
+
+_integrated_pipe_tx_messages: queue.Queue[str] = queue.Queue()
+_integrated_pipe_rx_messages: queue.Queue[str] = queue.Queue()
+
+def IPClog(message: str):
+    print(f"[IPC] {message}")
+
+def _is_pipeerror_disconnect(error: pywintypes.error) -> bool:
+    return error.winerror in (
+        109,
+        232,
+        233,
+    )
+
+PIPE_BUFFER_SIZE = 1024
+
+def await_connection_to_pipe(handle: int):
+    try:
+        win32pipe.ConnectNamedPipe(handle, None)
+    except pywintypes.error as e:
+        # The client might have connected before this function was called.
+        if e.winerror != 535: # 535 = ERROR_PIPE_CONNECTED
+            IPClog(f"Got an error ({type(e).__name__}) {e} after calling ConnectNamedPipe")
+            raise
+
+def flush_ipc_rx_queue():
+    totally_empty_queue(_integrated_pipe_rx_messages)
+
+def _integrated_pipe_tx_worker():
+    def runner(tx_pipe: int):
+        message = _integrated_pipe_tx_messages.get().strip() + '\n'
+        try:
+            win32file.WriteFile(tx_pipe, message.encode("utf-8"))
+        except pywintypes.error as e:
+            IPClog(f"Got an error ({type(e).__name__}) {e} while writing to tx pipe, propagating")
+            raise
+
+    def driver():
+        IPClog(f"Creating new tx pipe..")
+        tx_pipe = win32pipe.CreateNamedPipe(
+            _INTEGRATED_PYTHON_PIPE_PATH,
+            win32pipe.PIPE_ACCESS_OUTBOUND,
+            win32pipe.PIPE_TYPE_MESSAGE |
+            win32pipe.PIPE_READMODE_MESSAGE |
+            win32pipe.PIPE_WAIT,
+            1,
+            PIPE_BUFFER_SIZE,
+            PIPE_BUFFER_SIZE,
+            0,
+            win32security.SECURITY_ATTRIBUTES()
+        )
+        IPClog(f"Created new tx pipe, waiting for client connection...")
+        await_connection_to_pipe(tx_pipe)
+        IPClog(f"TX pipe connected and ready.")
+        send_pipe_message("@HEARTBEAT")
+        try:
+            while True:
+                runner(tx_pipe)
+        except pywintypes.error as e:
+            if _is_pipeerror_disconnect(e):
+                IPClog(f"Got disconnect error ({type(e).__name__}) {e}")
+            else:
+                IPClog(f"ENCOUNTERED AN ERROR: ({type(e).__name__}) {e}")
+                raise
+        finally:
+            if tx_pipe is not None:
+                try:
+                    win32pipe.DisconnectNamedPipe(tx_pipe)
+                except pywintypes.error as e2:
+                    IPClog(f"Got an error ({type(e2).__name__}) {e2} when disconnecting tx pipe.")
+                    pass
+                win32file.CloseHandle(tx_pipe)
+
+    while True:
+        try:
+            driver()
+        except Exception as e:
+            IPClog(f"ENCOUNTERED AN ERROR WHILE RUNNING IPC TX DRIVER: ({type(e).__name__}) {e}")
+
+def totally_empty_queue(q: queue.Queue):
+    try:
+        while True:
+            q.get(block=False)
+    except queue.Empty:
+        return
+
+def _integrated_pipe_rx_worker():
+
+    def runner(rx_pipe: int):
+        _, data = win32file.ReadFile(rx_pipe, PIPE_BUFFER_SIZE)
+        if isinstance(data, bytes):
+            message = data.decode("utf-8").strip()
+        elif isinstance(data, str):
+            message = data.strip()
+        else:
+            raise RuntimeError(f"Unexpected datatype of data: {type(data).__name__}")
+        if not message:
+            IPClog("Expected data to be received when calling win32file.ReadFile, got empty message after .strip")
+            return
+        IPClog(f"Received message {message} from rx pipe")
+        if message == "STOPPED":
+            set_SS14_STATE(SS14IntegrationState.INTEGRATION_DISCONNECTED)
+        elif message == "STARTED":
+            set_SS14_STATE(SS14IntegrationState.INTEGRATION_CONNECTED)
+        _integrated_pipe_rx_messages.put(message)
+
+    def driver():
+        IPClog(f"Creating new rx pipe...")
+        rx_pipe = win32pipe.CreateNamedPipe(
+            _INTEGRATED_CS_PIPE_PATH,
+            win32pipe.PIPE_ACCESS_INBOUND,
+            win32pipe.PIPE_TYPE_MESSAGE |
+            win32pipe.PIPE_READMODE_MESSAGE |
+            win32pipe.PIPE_WAIT,
+            1,
+            PIPE_BUFFER_SIZE,
+            PIPE_BUFFER_SIZE,
+            0,
+            win32security.SECURITY_ATTRIBUTES()
+        )
+        IPClog(f"Created new rx pipe {rx_pipe}, waiting for connection...")
+        await_connection_to_pipe(rx_pipe)
+        IPClog(f"RX pipe connected and ready.")
+        totally_empty_queue(_integrated_pipe_rx_messages)
+        try:
+            while True:
+                runner(rx_pipe)
+        except pywintypes.error as e:
+                if _is_pipeerror_disconnect(e):
+                    IPClog(f"Got disconnect error ({type(e).__name__}) {e}")
+                else:
+                    IPClog(f"ENCOUNTERED AN ERROR: ({type(e).__name__}) {e}")
+                    raise
+        finally:
+            if rx_pipe is not None:
+                try:
+                    win32pipe.DisconnectNamedPipe(rx_pipe)
+                except pywintypes.error as e2:
+                    IPClog(f"Got an error ({type(e2).__name__}) {e2} when disconnecting rx pipe.")
+                    pass
+                win32file.CloseHandle(rx_pipe)
+
+    while True:
+        try:
+            driver()
+        except Exception as e:
+            IPClog(f"ENCOUNTERED AN ERROR WHILE RUNNING IPC RX DRIVER: ({type(e).__name__}) {e}")
+
+TARGET_SS14_PROCESS_NAME = "SS14.Loader.exe"
+
+@shared.diagnose_entry(simple=True)
+def _locate_ss14_pid() -> int | None:
+    for process in psutil.process_iter(["name"]):
+        time.sleep(0.01)
+        try:
+            if process.info["name"].lower() == TARGET_SS14_PROCESS_NAME.lower():
+                return process.pid
+        except Exception as e:
+            print(f"Encountered an exception while locating ss14 pid: ({type(e).__name__}) {e}")
+    return None
+
+class SS14BootstrapErrorcodes(Enum):
+    Success = 0
+    InvalidArguments = 2
+    ProcessDead = 3
+    ProcessNotFound = 4
+    DiagnosticsUnavailable = 5
+    BootstrapNotFound = 6
+    AttachmentFailed = 7
+
+@shared.diagnose_entry()
+def _ss14_integration_watchdog():
+    time.sleep(5) # allow time for communication with already running plugin to establish
+    if SS14_STATE == SS14IntegrationState.INTEGRATION_CONNECTED:
+        _is_ss14_disconnected.clear()
+    else:
+        _is_ss14_disconnected.set()
+    _is_ss14_disconnected.wait()
+    print(f"ss14 disconnection flag set.")
+    waiting_state = ""
+    def set_waiting_state(state: str):
+        nonlocal waiting_state
+        waiting_state = state
+        tk_config(label, text=state)
+    set_waiting_state(f"Waiting for {TARGET_SS14_PROCESS_NAME} to launch...")
+    while True:
+        _is_ss14_disconnected.wait()
+        print("SS14 watchdog detected a disconnection.")
+        pid = _locate_ss14_pid()
+        if pid is None:
+            # ss14 is not running.
+            time.sleep(1)
+            continue
+        print(f"Located {TARGET_SS14_PROCESS_NAME} at pid {pid}")
+        set_waiting_state(f"Waiting for boostrapper to execute...")
+        result = subprocess.run(["dotnet/built/SS14Integration.App.exe", f"{pid}"], capture_output=True, text=True)
+        exit_code = SS14BootstrapErrorcodes(result.returncode)
+        print(f"Ran bootstrapper.")
+        if exit_code != SS14BootstrapErrorcodes.Success:
+            set_waiting_state(f"Bootstrapper failed!")
+            print(f"Got boostrap error code {exit_code.name}.\nSTDOUT: {result.stdout.strip()}\nSTDERR: {result.stderr.strip()}")
+            colorize("red", 1)
+            time.sleep(1)
+            set_waiting_state(f"Scanning for {TARGET_SS14_PROCESS_NAME}...")
+            continue
+        timeout = 15
+        check_rate = 5
+        hook_successful = False
+        wheel = advance_wheel("")
+        last_wheel_time = time.time()
+        print(f"Waiting for C# hooks to load.")
+        set_waiting_state(f"Loading C# hooks... {wheel}")
+        for i in range(int(check_rate * timeout)):
+            if time.time() - last_wheel_time > 1:
+                last_wheel_time = time.time()
+                wheel = advance_wheel(wheel)
+                set_waiting_state(f"Loading C# hooks... {wheel}")
+            if SS14_STATE == SS14IntegrationState.INTEGRATION_CONNECTED:
+                print(f"Got connection state after {i + 1} attempts.")
+                hook_successful = True
+                break
+            time.sleep(1 / check_rate)
+        if hook_successful:
+            _is_ss14_disconnected.clear()
+            waiting_state = f"Waiting for {TARGET_SS14_PROCESS_NAME} to launch..."
+            set_transient_label_text(text="Connected to SS14.", wait_time=5, after_text="Waiting...")
+        else:
+            set_waiting_state(f"Attempting hook again. Locating {TARGET_SS14_PROCESS_NAME}...")
+
+def _init_ss14_integration():
+    tk_config(label, text="Starting SS14 IPC...")
+    shared.spawn_thread(_integrated_pipe_tx_worker)
+    shared.spawn_thread(_integrated_pipe_rx_worker)
+    shared.spawn_thread(_ss14_integration_watchdog)
+
+class IntegrationError(RuntimeError):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+class IntegrationNoResponseError(IntegrationError):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+class IntegrationBadResponseError(IntegrationError):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+def submit_integrated(transcript: str):
+    if SS14_STATE == SS14IntegrationState.INTEGRATION_DISCONNECTED and not check_integration_heartbeat():
+        tk_config(label, text="The SS14 integration is not connected.")
+        return
+    MAX_ATTEMPTS = 2
+    flush_ipc_rx_queue()
+    for _attempt_raw in range(MAX_ATTEMPTS):
+        attempt = _attempt_raw + 1
+        try:
+            send_pipe_message(transcript)
+            timeout_s = 0.1 * attempt
+            ack = receive_pipe_message(timeout=timeout_s)
+            if ack is None:
+                raise IntegrationNoResponseError(f"Didn't recieve a response when transmitting transcript \"{transcript}\" after {timeout_s}s (attempt {attempt})")
+            elif ack == "STOPPED":
+                tk_config(label, text="The SS14 integration has been closed.")
+                return
+            elif ack != "OK":
+                raise IntegrationBadResponseError(f"Received \"{ack}\" as a response when transmitting transcript \"{transcript}\", expected \"OK\"")
+            return
+        except IntegrationError as e:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            print(f"Ignoring error while sending transcript: ({type(e).__name__}) {e}")
+    
 def submit_chat(transcript: str):
     if USE_CLIPBOARD:
         pyperclip.copy(transcript)
@@ -3538,7 +3905,10 @@ def unblock_problematic_inputs():
                     release_key(mvni.name)
             mvni.was_modified = False
         BLOCKED_PRESSABLES.clear()
-                    
+
+def should_submission_block_keys():
+    return SUBMISSION_METHOD != SubmissionMethod.SS14
+
 def submit():
     global state
     if state != State.ACCEPTING:
@@ -3550,8 +3920,11 @@ def submit():
     tk_config(label, text=transcript)
     print("--- Submitting transcript")
     colorize("green", 1)
-    block_problematic_inputs() # should sync with kblock, past this point all keys are blocked
-                               # possible message queue shenanigans?
+    if should_submission_block_keys():
+        block_problematic_inputs() # should sync with kblock, past this point all keys are blocked
+                                   # possible message queue shenanigans?
+    else:
+        print(f"Skipping blocking because {SUBMISSION_METHOD} does not require key blocking.")
     success = threading.Event()
     def perform_submission():
         nonlocal transcript
@@ -3562,17 +3935,22 @@ def submit():
                 label_background.config_and_apply(bg="light blue")(lambda obj: obj.config(bg="white"), 1)
                 if not (transcript.startswith(RADIO_PREFIX) or transcript.startswith(":")):
                     transcript = f"{RADIO_PREFIX} " + transcript
-            if use_say:
+            if SUBMISSION_METHOD == SubmissionMethod.Say:
                 submit_say(transcript)
-            elif use_hwnd:
+            elif SUBMISSION_METHOD == SubmissionMethod.HWND:
                 submit_automation(transcript)
-            else:
+            elif SUBMISSION_METHOD == SubmissionMethod.Chat:
                 submit_chat(transcript)
+            elif SUBMISSION_METHOD == SubmissionMethod.SS14:
+                submit_integrated(transcript)
+            else:
+                raise RuntimeError(f"Unexpected submission method {SUBMISSION_METHOD}")
         except:
             raise
         finally:
-            unblock_problematic_inputs() # finally, keys are unblocked AFTER submission is done,
-                                         # also synchronized on kblock
+            if should_submission_block_keys():
+                unblock_problematic_inputs() # finally, keys are unblocked AFTER submission is done,
+                                             # also synchronized on kblock
             IS_RADIO = False
             set_radio_colors()
         success.set()
@@ -3583,10 +3961,11 @@ def submit():
             return
         unblock_problematic_inputs()
         extramessage = ""
-        if use_hwnd:
+        if SUBMISSION_METHOD == SubmissionMethod.HWND:
             extramessage = "\nUsing the HWND output system WILL NOT WORK if you press one of the chat bar buttons!\nMake sure you don't have Say, Whisper, Me, or OOC pressed or this WILL happen!"
         messagebox.showwarning("Excessive output delay!", f"Sumbitting the transcript took longer than 5 seconds, aborting.{extramessage}")
-    spawn_thread(wait_and_unblock)
+    if should_submission_block_keys():
+        spawn_thread(wait_and_unblock)
 
 def reject():
     global state
@@ -3594,7 +3973,7 @@ def reject():
         return
     global STOP_RECORDING
     global CANCEL_PROCESS
-    if use_hwnd:
+    if SUBMISSION_METHOD == SubmissionMethod.HWND:
         hwnd_settext("")
     if state == State.RECORDING:
         with STATUS_LOCK:
@@ -3753,7 +4132,7 @@ def keyboard_listener():
 
 @shared.diagnose_entry(simple=True)
 def _lazy_get_dreamseeker_hwnd():
-    if use_hwnd:
+    if SUBMISSION_METHOD == SubmissionMethod.HWND:
         _get_dreamseeker_editbox_hwnd()
 
 EARLY_GIVEUP_INIT = False
@@ -4000,6 +4379,24 @@ def filter_and_make_readable_init_exception(e: Exception):
     spawn_thread(lambda: messagebox.showerror("Config error", f"An error was made in the config file. Check {INIT_PROCESSING_CONFIGFILE} for any mistakes. To see the issue, look at the speech-to-text window."))
     raise shared.ReportExceptionCancellationError()
 
+def is_dotnet_10_installed():
+    try:
+        result = subprocess.run(
+            ["dotnet", "--list-sdks"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        return any(
+            line.split()[0].startswith("10.0.")
+            for line in result.stdout.splitlines()
+            if line.strip()
+        )
+
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+
 @shared.diagnose_entry
 def init():
     resume_INIT()
@@ -4115,6 +4512,8 @@ def init():
     spawn_thread(keyboard_listener)
 
     tk_config(label, text="Waiting...")
+    if SUBMISSION_METHOD == SubmissionMethod.SS14:
+        _init_ss14_integration()
 
 @shared.diagnose_entry
 def bootstrap():
