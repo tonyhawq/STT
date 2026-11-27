@@ -2037,7 +2037,12 @@ def _open_settings_impl():
     ttk.Label(output_base_frame, text="  Chat key  ").grid(column=0, row=11, sticky="ew")
     ttk.Entry(output_base_frame, textvariable=stored_vars["output:chat_settings:chat_key@key"]).grid(column=2, row=11, sticky="ew")
     infobutton(output_base_frame, 3, 11, "The key that opens the TGUI chat window.")
-    expanding_frame(output_base_frame, row=12)
+    
+    ttk.Label(output_base_frame, text="SS14 Settings:", font=text_font).grid(column=0, row=12, sticky="ew")
+    ttk.Label(output_base_frame, text="  Client exe:  ").grid(column=0, row=13, sticky="ew")
+    ttk.Entry(output_base_frame, textvariable=stored_vars["output:ss14_settings:client_exe@string"]).grid(column=2, row=13, sticky="ew")
+    infobutton(output_base_frame, 3, 13, "Your ss14 client. To find it, load into a server and open task manager. Find the ss14 program that has the server as a child. Right-click it and press properties. The filename goes here.")
+    expanding_frame(output_base_frame, row=14)
 
     stored_vars["meta:model@string"] = tk.StringVar(value=config["meta"]["model"])
     stored_vars["meta:path_to_model@string"] = tk.StringVar(value=config["meta"]["path_to_model"])
