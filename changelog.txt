@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
 Version: 1.1.0
-Date: 2026-11-27
+Date: 2026-11-28
   Name:
     - Release 1.1
   Headline:
@@ -8,12 +8,34 @@ Date: 2026-11-27
   Features:
     - Adds a NO LATENCY ss14 integration! This was accomplished by injecting a harmony plugin into the frame loop of the client
     - Adds a hook to shared.report_exception to report when the user closes the error box
+    - Adds a progressbar to the installation script
+    - Adds proper logging for all console output
+    - Adds more CUDA support for a wider range of GPUs
+    - Adds an explanation to "allow fetching from huggingface hub"
+    - Warns the user when attempting to close pytorch installer
+    - Adds support for left and right control being different buttons
+    - Adds command line arguments: --no-model; --model=parakeet, granite, or none; --force-onboarding; --run-torch-download; --verbose; --no-config
   Changes:
     - Changes the wizard to always be the same width
     - Adds an explanation for what the tgui fancy chat bar is
     - Adds a list of fake phrases to the fake ASR model
+    - The old current.log is now located at current.stacktrace.log
+    - Calls to os.execv are replaced with calls to shared.reboot which persists the log file
+    - Adds a line on removing STT in the readme
+    - Changes default submission mode to chat
   Bugfixes:
-    - Replaced assorted calls to tk.TopLevel with shared.TopLevel or shared.TopLevelCentered 
+    - Removes some unnecessary logspam in Pressable
+    - Replaced assorted calls to tk.TopLevel with shared.TopLevel or shared.TopLevelCentered
+    - Fixes CPU inference not working due to missing setuptools dependency
+    - Fixes a host of bugs in the pytorch installer
+    - Fixes wrong pytorch versions CUDA tag 128
+    - Adds CUDA 128 as a fallback option
+    - Pins torchaudio to the correct version for 2.12.0 and 2.2.2
+    - Fixes numpy issues by pinning pyarrow<26
+    - Compute capability is checked when choosing CUDA Version
+    - Fixes loading text not updating properly when finishing pytorch installer
+    - Pins setuptools in requirements.txt, without it some torch versions would break
+    - Skips a call to _load_model_get_hwnd which made "Locating dreamseeker.exe..." show up for a few frames (seriously, why wasn't this always gated? What's the point of lazily locating the dreamseeker window?)
 ---------------------------------------------------------------------------------------------------
 Version: 1.0.0
 Date: 2026-11-24

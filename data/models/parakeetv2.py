@@ -8,7 +8,7 @@ class ParakeetV2(shared.SimpleASRModel):
         model_path = f"{state.model_dir}{model_filename}"
         if not os.path.exists(model_path):
             state.hide_spinner()
-            if not state.ask_allow_or_deny(f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?"):
+            if not state.ask_allow_or_deny(f"Could not find \"{model_path}\". Allow fetching from \"https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2\"?", extra_info="This is the speech to text program that converts audio into text. You need this to run Speech to Text. It's not automatically included because it's about 2GB in size. Press allow to download it!"):
                 state.quit()
             state.show_spinner()
             state.settext("Downloading parakeet-tdt-0.6b-v2.nemo...")

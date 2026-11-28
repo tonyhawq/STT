@@ -2,9 +2,51 @@ import sys
 print(sys.path)
 print(sys.executable)
 print(sys.version_info)
-print("Starting...")
+print("Starting... Loading shared data...")
+import argparse
+print("Setting up command line arguments...")
+_cli_arg_parser = argparse.ArgumentParser(description="Speech to Text app for SS13/14.")
+_cli_arg_parser.add_argument(
+    "--no-model",
+    action="store_true",
+    help="Force load fake_asr_model instead of the configurated value"
+)
+_cli_arg_parser.add_argument(
+    "--run-torch-download",
+    action="store_true",
+    help="Forces the pytorch downloader to run on startup"
+)
+_cli_arg_parser.add_argument(
+    "--verbose",
+    action="store_true",
+    help="Enable verbose output"
+)
+_cli_arg_parser.add_argument(
+    "--force-onboarding",
+    action="store_true",
+    help="Forces the FIRST_BOOT flag to True"
+)
+_cli_arg_parser.add_argument(
+    "--no-config",
+    action="store_true",
+    help="Uses a temporary config file"
+)
+_cli_arg_parser.add_argument(
+    "--model",
+    type=str,
+    default=None,
+    help="Specify the model to use"
+)
+ARGS = _cli_arg_parser.parse_args()
+
 try:
-    print("Importing utilities...")
+    print("Loading utilities...")
+    import shared
+    if ARGS.verbose:
+        shared.VERBOSE = True
+    shared.ARGS = ARGS
+    log = shared.logger.log
+    print = shared.print
     import threading
     import json
     import pynput
@@ -149,7 +191,7 @@ def _main_thread_async_shared_wrapper(func, *args, **kwargs):
     @main_thread_async
     @functools.wraps(func)
     def worker():
-        print(f"calling {_main_thread_async_shared_wrapper.__name__} with {func.__name__}")
+        shared.logger.logFast(f"{_main_thread_async_shared_wrapper.__name__} called with {func.__name__} {func}")
         return func(*args, **kwargs)
     return worker()
 
@@ -423,16 +465,16 @@ class Filter:
         self.display: "SizedLabel | None" = None
 
     def on_enable(self):
-        print(f"Filter::on_enable({self.name})")
+        shared.logger.logFast(f"Filter::on_enable({self.name})")
         to_delete = []
         for name, filter in self.manager.enabled_filters.items():
             if (filter is not self) and (filter.exclusive or self.exclusive) and filter.group == self.group:
-                print(f"  Found filter {name} that is {'exclusive' if filter.exclusive else 'excluded'} over group {filter.group}")
+                shared.logger.logFast(f"  Found filter {name} that is {'exclusive' if filter.exclusive else 'excluded'} over group {filter.group}")
                 should_continue = False
                 for action in filter.actions:
-                    print(f"   - Has action {action.name} vs enabled_by: {self.enabled_by}")
+                    shared.logger.logFast(f"   - Has action {action.name} vs enabled_by: {self.enabled_by}")
                     if self.enabled_by.get(action.name):
-                        print("  : this filter is enabled by")
+                        shared.logger.logFast("  : this filter is enabled by")
                         should_continue = True
                         break
                 if should_continue:
@@ -496,8 +538,8 @@ class ExpandableColumnFlow:
 
     @main_thread
     def delete_button(self, widget: SizedLabel):
-        print(f"Delete button called")
-        print(f" -locked")
+        shared.logger.logFast(f"Delete button called")
+        shared.logger.logFast(f" -locked")
         self.hooks.get("on_remove", lambda a, b: ...)(self, "before")
         index: int | None = None
         for i, other_widget in enumerate(self.flat):
@@ -520,8 +562,8 @@ class ExpandableColumnFlow:
         
     @main_thread
     def add_button(self) -> SizedLabel:
-        print(f"Add button called")
-        print(f" -locked")
+        shared.logger.logFast(f"Add button called")
+        shared.logger.logFast(f" -locked")
         self.hooks.get("on_add", lambda a, b: ...)(self, "before")
         widget = SizedLabel(self.grid, None, 25, anchor="center")
         row = math.floor(len(self.flat) / self.columns)
@@ -574,7 +616,7 @@ class FilterManager:
 
     def register(self, filter: Filter):
         if filter.name in self.registered_filters:
-            print(self.registered_filters)
+            log(f"Attempted to register filter {filter.name} while it was already registered. Currently registered filters are [{', '.join(self.registered_filters)}]")
             raise RuntimeError(f"Attempted to register {filter.name} while {filter.name} is already registered.")
         self.registered_filters[filter.name] = filter
 
@@ -586,7 +628,7 @@ class FilterManager:
 
     def enable_filter(self, name: str, source: str):
         with self.lock:
-            print(f"Enabling filter \"{name}\" from \"{source}\"")
+            shared.logger.logFast(f"Enabling filter \"{name}\" from \"{source}\"")
             if not name in self.registered_filters:
                 raise RuntimeError(f"Attempted to enable filter {name} while {name} does not exist.")
             filter = self.registered_filters[name]
@@ -594,7 +636,7 @@ class FilterManager:
             filter.enabled_by[source] = True
             self.enabled_filters[filter.name] = filter
             if was_disabled:
-                print(f"Filter was disabled, enabled. enabled_by is {filter.enabled_by}")
+                shared.logger.logFast(f"Filter was disabled, enabled. enabled_by is {filter.enabled_by}")
                 filter.on_enable()
                 if filter.display:
                     self.display.delete_button(filter.display)
@@ -605,12 +647,12 @@ class FilterManager:
 
     def disable_filter(self, name: str, source: str):
         with self.lock:
-            print(f"Disabling filter \"{name}\" from \"{source}\"")
+            shared.logger.logFast(f"Disabling filter \"{name}\" from \"{source}\"")
             if not name in self.registered_filters:
                 raise RuntimeError(f"Attempted to disable filter {name} while {name} does not exist.")
             filter = self.registered_filters[name]
             if len(filter.enabled_by) == 0:
-                print(f"Attempted to disable \"{name}\" from source \"{source}\" while enabled_by was zero length")
+                shared.logger.logFast(f"Attempted to disable \"{name}\" from source \"{source}\" while enabled_by was zero length")
                 return
             filter.enabled_by.pop(source, None)
             if len(filter.enabled_by) > 0:
@@ -732,6 +774,22 @@ class KeyButton:
     def is_keyboard(self):
         return True
 
+def _generate_sided_keys(to: str, bases: list[str]) -> dict[str, str]:
+    generated = {}
+    sides = ["l", "r"]
+    for side in sides:
+        sided_key = side + to
+        for base in bases:
+            generated[f"l{base}"] = sided_key
+            generated[f"l_{base}"] = sided_key
+            generated[f"left{base}"] = sided_key
+            generated[f"left_{base}"] = sided_key
+            generated[f"left {base}"] = sided_key
+    return generated
+
+def _generate_all_sided_keys() -> dict[str, str]:
+    return _generate_sided_keys("ctrl", ["ctrl", "control"]) | _generate_sided_keys("shift", ["shift"]) | _generate_sided_keys("alt", ["alt"])
+
 class Pressable:
     def __init__(self, control: KeyButton | MouseButton):
         if isinstance(control, KeyButton):
@@ -765,10 +823,23 @@ class Pressable:
         'numpad 7': (71,),
         'numpad 8': (72,),
         'numpad 9': (73,),
+
+        'ctrl': (29, 285),
+        'shift': (42, 54),
+        'alt': (56, 312),
+        'lctrl': (29,),
+        'rctrl': (285,),
+        'lshift': (42,),
+        'rshift': (54,),
+        'lalt': (56,),
+        'ralt': (312,),
     }
+
+    _sided_key_map: dict[str, str] = _generate_all_sided_keys()
 
     @staticmethod
     def _str_to_scancode(val: str) -> tuple[int, ...]:
+        shared.verbose_print(f"Scanning str to scancodes: {val}", fast=True)
         val = val.strip()
         if val.startswith('<') and val.endswith('>'):
             try:
@@ -776,8 +847,11 @@ class Pressable:
             except ValueError as e:
                 raise RuntimeError(f"Invalid scancode {val}, expected number inside of angle brackets, got {val.removeprefix('<').removesuffix('>')}.") from e
         if val in Pressable._special_name_to_scancode:
-            print(f"val \"{val}\"in pressable")
+            shared.verbose_print(f"  val \"{val}\" was a special name", fast=True)
             scancodes = Pressable._special_name_to_scancode[val]
+        elif val in Pressable._sided_key_map:
+            shared.verbose_print(f"  val \"{val}\" was a sided key", fast=True)
+            scancodes = Pressable._special_name_to_scancode[Pressable._sided_key_map[val]]
         else:
             scancodes = keyboard.key_to_scan_codes(val)
         translated = []
@@ -979,14 +1053,18 @@ def _disabled_control_label_hook(obj, args):
         return
     global _last_label_state
     _last_label_state = new_label
-    if CONTROLS_DISABLED:
+    if CONTROLS_DISABLED and not _allow_control_lock_label_edits:
         tk_config(label, text=_controls_disabled_label_text)
+
+_allow_control_lock_label_edits = False
 
 tk_listen_for_config(label, _disabled_control_label_hook)
 @main_thread
-def disable_all_controls():
+def disable_all_controls(allow_label_edits: bool = False):
     global CONTROLS_DISABLED
+    global _allow_control_lock_label_edits
     CONTROLS_DISABLED = True
+    _allow_control_lock_label_edits = allow_label_edits
     background.config_and_apply(bg="red")
     tk_config(label, text=_controls_disabled_label_text)
 
@@ -1085,7 +1163,7 @@ def _open_settings_impl():
             varstr = str(var)
             if isinstance(var, tk.Variable):
                 varstr = str(var.get())
-            print(f"Saving value {':'.join(path)}:{file} (of type {extension}) => {varstr} (path {'/'.join(path)} file {file})")
+            shared.logger.logFast(f"Saving value {':'.join(path)}:{file} (of type {extension}) => {varstr} (path {'/'.join(path)} file {file})")
             try:
                 if isinstance(var, list):
                     value = convert_type(var, extension)
@@ -1110,21 +1188,26 @@ def _open_settings_impl():
             f.write(tomlkit.dumps(config))
         print("-- Finished saving to file")
 
+    def _was_config_modified() -> bool:
+        with open(shared.CONFIG_FILENAME, "r") as f:
+            unmodified = tomlkit.load(f)
+            save_to_cfgmem()
+            return unmodified != config
+
     def window_close_hook():
         global SETTINGS_WINDOW
         if SETTINGS_WINDOW is None:
             raise RuntimeError("SETTINGS_WINDOW is None on window_close_hook")
-        with open(shared.CONFIG_FILENAME, "r") as f:
-            unmodified = tomlkit.load(f)
+        modified = False
         try:
-            save_to_cfgmem()
-            if unmodified == config:
-                resume_INIT()
-                SETTINGS_WINDOW.destroy()
-                SETTINGS_WINDOW = None
-                return
-        except:
-            pass
+            modified = _was_config_modified()
+        except Exception as e:
+            print(f"Got an exception while checking config for modifications: ({type(e).__name__}) {e}")
+        if not modified:
+            resume_INIT()
+            SETTINGS_WINDOW.destroy()
+            SETTINGS_WINDOW = None
+            return
         res = messagebox.askyesno("You have unsaved changes!", "You have unsaved changes! Do you want to save your changes?")
         if res:
             try:
@@ -1673,7 +1756,7 @@ def _open_settings_impl():
 
                 wizard.grab_release()
                 wizard.destroy()
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                shared.reboot()
 
             def deny():
                 wizard.grab_release()
@@ -1755,7 +1838,7 @@ def _open_settings_impl():
                     try:
                         save_to_file()
                         if restart:
-                            os.execv(sys.executable, [sys.executable] + sys.argv)
+                            shared.reboot()
                         else:
                             messagebox.showinfo("Restart required", f"Your settings have been saved. Restart to apply.")
                     except TypeError as e:
@@ -1845,7 +1928,7 @@ def _open_settings_impl():
     input_base_frame.columnconfigure(0, weight=0)
     input_base_frame.columnconfigure(1, weight=1)
     input_base_frame.columnconfigure(2, weight=0)
-    print(f"{config['input']['activate']}")
+    print(f"Activate keybind is {config['input']['activate']}")
     SETTINGS_WINDOW.vars = {} # type: ignore
     stored_vars: dict[str, tk.Variable | list[str]] = SETTINGS_WINDOW.vars # type: ignore
     stored_vars["input:activate@key"] = tk.StringVar(value=config["input"]["activate"])
@@ -1870,11 +1953,11 @@ def _open_settings_impl():
         captured_keys: set[str] = set()
         modifier_names = {
             "control_l": "ctrl",
-            "control_r": "ctrl",
+            "control_r": "rctrl",
             "shift_l": "shift",
-            "shift_r": "shift",
+            "shift_r": "rshift",
             "alt_l": "alt",
-            "alt_r": "alt",
+            "alt_r": "ralt",
             "meta_l": "meta",
             "meta_r": "meta",
             "mouse1": "lmb",
@@ -2075,12 +2158,43 @@ def _open_settings_impl():
         stored_vars["meta:prompt@string"].set(text) # type: ignore
     textedit.bind("<KeyRelease>", textedit_resize)
     textedit_resize()
+
+    def open_pytorch():
+        if SETTINGS_WINDOW:
+            if _was_config_modified():
+                val = messagebox.askyesnocancel("You have unsaved changes", "You have unsaved changes! Press yes to save and no to discard.")
+                if val is None:
+                    return
+                if val:
+                    save_to_file()
+            SETTINGS_WINDOW.destroy()
+        disable_all_controls(allow_label_edits=True)
+        pause_INIT()
+        tk_config(label, text="Opening pytorch installer...")
+        colorize("white", 0.1)
+        model_loading_state = shared.ModelLoadingState(
+            window=root,
+            settext=lambda text: tk_config(label, text=text),
+            quit=quit,
+            cancel_init=lambda _: quit(),
+            show_spinner=lambda: ...,
+            hide_spinner=lambda: ...,
+            model_dir="",
+            prompt="",
+            model_keywords=[],
+            allow_cpu=False
+        )
+        model_loading_state.run_pytorch_downloader()
+    
     infobutton(model_base_frame, 3, 2, "The prompt given to the ASR model. Currently, this is only supported on Granite. Access the prompt within shared.ModelLoadingState.prompt")
     add_listbox(model_base_frame, 3, "Keywords", "Keywords that the ASR model should target. Put any words that STT consistently gets wrong here. Currently only supported on Granite. Access within shared.ModelLoadingState.keywords", stored_vars["meta:keywords@list@string"])
     ttk.Label(model_base_frame, text="  Warn on CPU  ").grid(column=0, row=4, sticky="ew")
     make_checkbox(model_base_frame, 2, 4, stored_vars["meta:warn_on_cpu@bool"])
     infobutton(model_base_frame, 3, 4, "Should STT warn you if the ASR model is loaded to your CPU? Note that CPU inference is much slower than GPU inferance.")
-    expanding_frame(model_base_frame, row=5)
+    ttk.Label(model_base_frame, text="  Open PyTorch wizard  ").grid(column=0, row=5, sticky="ew")
+    ttk.Button(model_base_frame, text="Open", command=open_pytorch).grid(column=2, row=5, sticky="ew")
+    infobutton(model_base_frame, 3, 5, "Open the PyTorch install wizard. A reboot will be required after opening it.")
+    expanding_frame(model_base_frame, row=6)
 
     stored_vars["meta:enable_version_checking@bool"] = tk.BooleanVar(value=config["meta"]["enable_version_checking"])
     stored_vars["meta:do_loudness_normalization@bool"] = tk.BooleanVar(value=config["meta"]["do_loudness_normalization"])
@@ -2455,7 +2569,6 @@ class KeyCombinationControl:
                 self._pressed_count += 1
                 self._check_press()
             def child_release(k=i):
-                print("release")
                 if self._currently_pressed.pop(k, True) is None:
                     self._check_depress()
                     self._pressed_count -= 1
@@ -2780,11 +2893,23 @@ model_keywords: list[str] = []
 model_prompt: str = _fallback_prompt()
 
 def load_settings_from_config():
+    if ARGS.no_config:
+        shared.CONFIG_FILENAME = shared.TEMP_CONFIG_FILENAME
+        shared.FILTERCONFIG_FILENAME = shared.TEMP_FILTERCONFIG_FILENAME
+        os.makedirs(shared.TEMP_PATH, exist_ok=True)
+        try:
+            os.remove(shared.TEMP_CONFIG_FILENAME)
+        except:
+            pass
+        try:
+            os.remove(shared.TEMP_FILTERCONFIG_FILENAME)
+        except:
+            pass
     global INIT_PROCESSING_CONFIGFILE
     INIT_PROCESSING_CONFIGFILE = shared.CONFIG_FILENAME
     print(f"Loading from config file {shared.CONFIG_FILENAME}")
     config = load_configdict_from_filename(shared.CONFIG_FILENAME, shared.CONFIG_BACKUP_FILENAME)
-    print(config)
+    print(f"{config}")
     output = config_get_dict(config, "output")
     say_settings = config_get_dict(output, "say_settings")
     chat_settings = config_get_dict(output, "chat_settings")
@@ -2792,7 +2917,7 @@ def load_settings_from_config():
     ss14_settings = config_get_dict(output, "ss14_settings")
     input = config_get_dict(config, "input")
     meta = config_get_dict(config, "meta")
-    if config_has_key(meta, "verbose"):
+    if config_has_key(meta, "verbose") and not ARGS.verbose:
         shared.VERBOSE = config_get_bool(meta, "verbose")
         if not shared.VERBOSE:
             faulthandler.disable()
@@ -2816,7 +2941,14 @@ def load_settings_from_config():
             raise ConfigTypeError(f"[{i}]", default_blocked_keys, str, key, f"Expected blocked_keys to be a list of strings, got {type(key).__name__}")
     setup_default_blocked_keys(default_blocked_keys)
     global CHOSEN_MODEL
-    CHOSEN_MODEL = config_get_string(meta, "model").strip().lower()
+    if ARGS.model and ARGS.no_model:
+        raise RuntimeError("Found both --no-model and --model in STT CLI args.")
+    if ARGS.model:
+        CHOSEN_MODEL = ARGS.model
+    elif ARGS.no_model:
+        CHOSEN_MODEL = "none"
+    else:
+        CHOSEN_MODEL = config_get_string(meta, "model").strip().lower()
     if CHOSEN_MODEL != "none" and CHOSEN_MODEL != "parakeet" and CHOSEN_MODEL != "granite" and not CHOSEN_MODEL.endswith(".py"):
         raise ConfigError(f"Expected \"model\" in \"meta\" to be either none, parakeet, granite, or a python file, instead it was \"{CHOSEN_MODEL}\". To use a custom model, ensure the path to the file ends in .py and see an example in data/models/parakeetv2.py")
     global model_prompt
@@ -3111,7 +3243,7 @@ _integrated_pipe_tx_messages: queue.Queue[str] = queue.Queue()
 _integrated_pipe_rx_messages: queue.Queue[str] = queue.Queue()
 
 def IPClog(message: str):
-    print(f"[IPC] {message}")
+    shared.logger.logFast(f"[IPC] {message}")
 
 def _is_pipeerror_disconnect(error: pywintypes.error) -> bool:
     return error.winerror in (
@@ -3819,14 +3951,14 @@ def submit_automation(transcript: str):
     )
     hwnd_to_focus = info.hwndFocus
     if hwnd_to_focus == AUTOMATION_TEXTEDIT.hwnd:
-        print(f"Foreground window was {anyashex(hwnd_to_focus)} which is the chat box. Switching focus to dreamseeker.exe...")
+        shared.logger.logFast(f"Foreground window was {anyashex(hwnd_to_focus)} which is the chat box. Switching focus to dreamseeker.exe...")
         if LAST_FOCUSED_HWND is None:
-            print(f"Can't switch focus because LAST_FOCUSED_HWND was None.")
+            shared.logger.logFast(f"Can't switch focus because LAST_FOCUSED_HWND was None.")
         else:
             hwnd_to_focus = LAST_FOCUSED_HWND
     else:
         LAST_FOCUSED_HWND = hwnd_to_focus
-    print(f"Attaching to {anyashex(parent)} : window to refocus is {anyashex(hwnd_to_focus)}")
+    shared.logger.logFast(f"Attaching to {anyashex(parent)} : window to refocus is {anyashex(hwnd_to_focus)}")
     attach_and_focus(parent)
     ctypes.windll.user32.PostMessageW(parent, WM_KEYDOWN, VK_RETURN, 0)
     ctypes.windll.user32.PostMessageW(parent, WM_KEYUP, VK_RETURN, 0)
@@ -3834,9 +3966,9 @@ def submit_automation(transcript: str):
     interval = 1 / 30 * 1000 * 1000 * 1000 # 1 frame at 30fps
     while len(get_editbox_textbuf(AUTOMATION_TEXTEDIT.hwnd)) > 0:
         if time.monotonic_ns() - start > interval:
-            print(f"Submission couldn't complete within one 30fps frame {transcript}")
+            shared.logger.logFast(f"Submission couldn't complete within one 30fps frame {transcript}")
             if ctypes.windll.user32.GetFocus() != parent:
-                print("Submission unfocused parent")
+                shared.logger.logFast("Submission unfocused parent")
                 attach_and_focus(parent)
             ctypes.windll.user32.PostMessageW(parent, WM_KEYDOWN, VK_RETURN, 0)
             ctypes.windll.user32.PostMessageW(parent, WM_KEYUP, VK_RETURN, 0)
@@ -3894,14 +4026,14 @@ def release_key(key: str):
 
 def block_problematic_inputs():
     with kblock:
-        print("Blocking input...")
+        shared.logger.logFast("Blocking input...")
         for mvni in DEFAULT_TO_BLOCK:
             for alias in mvni.aliases():
                 BLOCKED_PRESSABLES[alias] = mvni
 
 def unblock_problematic_inputs():
     with kblock:
-        print("Unblocking input...")
+        shared.logger.logFast("Unblocking input...")
         for mvni in BLOCKED_PRESSABLES.values():
             if mvni.was_modified:
                 if mvni.is_pressed:
@@ -4086,6 +4218,8 @@ _special_scancode_map: dict[int, dict[str, int]] = {
     79: {"end": 79, "1": 80081355, "numpad 1": 80081355},
     81: {"page down": 75, "3": 80081356, "numpad 3": 80081356},
     73: {"page up": 73, "9": 80081357, "numpad 9": 80081357},
+    29: {"ctrl": 29, "right ctrl": 285},
+    56: {"alt": 56, "right alt": 312},
 }
 
 def translate_special_scancode(name: str, scancode: int) -> int:
@@ -4313,7 +4447,8 @@ def load_model(finished: threading.Event, should_spin: Box[bool]):
             except Exception as e:
                 raise RuntimeError(f"Exception encountered while loading {filter.name}: ({type(e).__name__}): {e}")
     show_spinner()
-    _load_model_get_hwnd()
+    if SUBMISSION_METHOD == SubmissionMethod.HWND:
+        _load_model_get_hwnd()
     finished.set()
 
 def advance_wheel(wheel: str) -> typing.Literal["-", "\\", "|", "/"]:
@@ -4387,18 +4522,16 @@ def filter_and_make_readable_init_exception(e: Exception):
 def is_dotnet_10_installed():
     try:
         result = subprocess.run(
-            ["dotnet", "--list-sdks"],
+            ["dotnet", "--list-runtimes"],
             capture_output=True,
             text=True,
             check=True
         )
-
-        return any(
-            line.split()[0].startswith("10.0.")
-            for line in result.stdout.splitlines()
-            if line.strip()
-        )
-
+        print(f"Checked installed dotnet: {result.stdout.strip()}")
+        for line in result.stdout.splitlines():
+            if line.lower().startswith("microsoft.netcore.app 10."):
+                return True
+        return False
     except (FileNotFoundError, subprocess.CalledProcessError):
         return False
 
@@ -4407,11 +4540,14 @@ def init():
     resume_INIT()
     global IS_FIRST_BOOT
     if last_version() is None:
-        fix_version_file(_version_filename_previous)
-        spawn_thread(lambda: messagebox.showinfo("STT Onboarding", "It looks like it's your first time using speech to text! Open the settings (the gear in the top left) for more information, or read the README!"))
         IS_FIRST_BOOT = True
     else:
         IS_FIRST_BOOT = False
+    if ARGS.force_onboarding:
+        IS_FIRST_BOOT = True
+    if IS_FIRST_BOOT:
+        fix_version_file(_version_filename_previous)
+        spawn_thread(lambda: messagebox.showinfo("STT Onboarding", "It looks like it's your first time using speech to text! Open the settings (the gear in the top left) for more information, or read the README!"))
     set_INIT_STATE(InitState.PRESETTINGS)
     def on_exception(e: Exception, context: str | None = None):
         shared.record_exception(e, context)
@@ -4431,8 +4567,9 @@ def init():
         print(f"settings took {startup_time.resetmstrnc()}s")
         free_ram = psutil.virtual_memory().available
         required_ram = 3 * 1024**3 # 5GB
-        print(f"Current free ram is {free_ram}B or {(free_ram / 1000 / 1000 / 1000):.2f}GB")
+        print(f"Current free ram is {free_ram}B or {(free_ram / 1000 / 1000 / 1000):.2f}GB", source="MEMORY")
         if free_ram < required_ram:
+            print(f"Low system memory", source="MEMORY")
             spawn_thread(messagebox.showerror, "Low system memory",
                         f"There is low system memory available. STT requires {required_ram//(1024**2)}MB available, but only {free_ram//(1024**2)}MB are available. The program may run slowly or crash, please free up resources before continuing!")
         if allow_version_checking:

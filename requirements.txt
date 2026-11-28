@@ -29,3 +29,5 @@ datasets
 editdistance
 pyannote.metrics
 IPython
+setuptools==80.9.0
+nvidia-ml-py

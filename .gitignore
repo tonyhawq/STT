@@ -33,3 +33,7 @@ dotnet/SS14Integration.Plugin/obj/*
 dotnet/logs/*
 dotnet/built/*
 !dotnet/built/0Harmony.dll
+current.stacktrace.log
+stacktrace.log
+persist.txt
+data/temp*

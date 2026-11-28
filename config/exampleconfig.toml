@@ -25,7 +25,7 @@ blocked_keys = [
 # is the worst option. If you run into issues
 # with one of them, try the others and see if
 # the issue goes away.
-output_method = "hwnd"
+output_method = "chat"
 # Whether to use your clipboard for sending.
 # Using the clipboard may be more reliable, it may not.
 # If you run into issues, try changing this setting

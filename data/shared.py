@@ -17,6 +17,11 @@ import uuid
 import re
 import tomllib
 import inspect
+import STTlogger
+import builtins
+import argparse
+
+ARGS = argparse.Namespace()
 
 T = typing.TypeVar("T")
 P = typing.ParamSpec("P")
@@ -25,17 +30,51 @@ thread_context = threading.local()
 
 DATA_PATH = "data/"
 CONFIG_PATH = "config/"
+TEMP_PATH = "temp/"
+
+def open_logger():
+    filenames = [f"{DATA_PATH}current.log", f"{DATA_PATH}logs/{time.time()}.log"]
+    persist = False
+    try:
+        persistence_file = DATA_PATH + "persist.txt"
+        print(f"Trying to open persistence file {persistence_file}")
+        with open(persistence_file, "r") as f:
+            filenames.clear()
+            for line in f:
+                filenames.append(line.strip())
+            persist = True
+        os.remove(persistence_file)
+        print(f"Removing persistence file")
+    except Exception as e:
+        print(f"Couldn't open: ({type(e).__name__}) {e}")
+    print(f"Opening logger with files: {filenames}, persist: {persist}")
+    return STTlogger.SimpleSTTLogger(filenames, persist=persist)
+
+logger = open_logger()
 
 VERBOSE = False
 
-def verbose_print(*args, **kwargs):
+def print(message: str, *, source: str | None = None, fast: bool = False):
+    if source:
+        builtins.print(f"({source}) {message}")
+    else:
+        builtins.print(message)
+    if fast:
+        logger.logFast(message, source=source)
+    else:
+        logger.log(message, source=source)
+
+def verbose_print(message: str, *, source: str | None = None, fast: bool = False):
     if VERBOSE:
-        print(*args, **kwargs)
+        print(message, source=source, fast=fast)
 
 CONFIG_FILENAME = CONFIG_PATH + "userconfig.toml"
 CONFIG_BACKUP_FILENAME = CONFIG_PATH + "exampleconfig.toml"
 FILTERCONFIG_FILENAME = CONFIG_PATH + "filters.toml"
 FILTERCONFIG_BACKUP_FILENAME = CONFIG_PATH + "examplefilters.toml"
+
+TEMP_CONFIG_FILENAME = TEMP_PATH + "config.toml"
+TEMP_FILTERCONFIG_FILENAME = TEMP_PATH + "filters.toml"
 
 def diagnose_entry(func=None, *, args=False, simple=False, only_verbose=False):
     _show_args = args
@@ -195,16 +234,19 @@ def _set_mbox_time():
 
 @diagnose_entry
 def record_exception(e: Exception, context: str | None = None) -> str:
-    print(f"shared.record_exception called with ({type(e).__name__}) {e}")
+    print(f"shared.record_exception called with ({type(e).__name__}) {e}", source="record_exception")
     if context is None:
         context = f"No context given for exception ({type(e).__name__}): {e}\n" + exception_to_filtered_traceback(e, context)
-    filename = DATA_PATH + "logs/" + str(time.time()) + ".log"
-    with io.open(DATA_PATH + "current.log", "w") as log:
-        log.write(context)
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    with io.open(filename, "w") as log:
-        log.write(context)
-    return filename
+    base_stacktrace_file = DATA_PATH + "current.stacktrace.log"
+    second_stacktrace_file = DATA_PATH + "logs/" + str(time.time()) + ".log"
+    print(f"  recording exception to {base_stacktrace_file} and {second_stacktrace_file}", source="record_exception")
+    logger.log(f"Got exception:\n{context}", source="EXCEPTION")
+    with io.open(base_stacktrace_file, "w") as logfile:
+        logfile.write(context)
+    os.makedirs(os.path.dirname(second_stacktrace_file), exist_ok=True)
+    with io.open(second_stacktrace_file, "w") as logfile:
+        logfile.write(context)
+    return second_stacktrace_file
 
 ExceptionAcknowledgedHook = typing.Callable[[typing.Literal["CANCELLED"] | None], typing.Any]
 
@@ -212,7 +254,7 @@ ExceptionAcknowledgedHook = typing.Callable[[typing.Literal["CANCELLED"] | None]
 def _global_exception_handler(exception: Exception, context: str = "No context available.", acknowledgement_hook: ExceptionAcknowledgedHook | None = None):
     try:
         filename = record_exception(exception, context)
-        message = f"Encountered an exception: ({type(exception).__name__}) {exception}\nFull stacktrace available at \"data/current.log\" and \"data/{filename}\"."
+        message = f"Encountered an exception: ({type(exception).__name__}) {exception}\nFull stacktrace available at \"{DATA_PATH}current.stacktrace.log\" and \"{DATA_PATH}/logs/{filename}\"."
         def show_mbox():
             global MBOX_POS
             global CAN_SHOW_MBOX
@@ -231,13 +273,13 @@ def _global_exception_handler(exception: Exception, context: str = "No context a
             if MBOX_COUNT > max_mbox_count:
                 CAN_SHOW_MBOX = False
                 errorstr = f"FATAL: encountered {MBOX_COUNT} exceptions within {max_mbox_reset_time} second{'' if max_mbox_reset_time == 1 else 's'}, terminating program early."
-                print(errorstr)
+                print(f"TOO MANY ERRORBOXES: {errorstr}", source="GEH")
                 quit_error(errorstr)
             _set_mbox_time()
         queue_deferred(show_mbox)
     except Exception as e:
         errorstr = f"FATAL: error encountered while processing {type(exception).__name__} ({exception}): {type(e).__name__}: {e}"
-        print(errorstr)
+        print(f"GEH encountered an error: {errorstr}", source="GEH")
         quit_error(errorstr)
 
 ReportExceptionHook = typing.Callable[[Exception, str | None], typing.Any]
@@ -265,21 +307,26 @@ def CancelExceptionReporting():
 
 @diagnose_entry
 def report_exception(e: Exception, context: str | None = None, acknowledgement_hook: ExceptionAcknowledgedHook | None = None):
+    logger.flush()
     try:
-        print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}")
+        print(f"Called shared.report_exception: ({type(e).__name__}) {e} with context {context}", source="report_exception")
         context = exception_to_filtered_traceback(e, context=context)
+        exception_hook_count = len(_exception_hooks)
+        if exception_hook_count > 0:
+            print(f"  Executing {exception_hook_count} exception hooks", source="report_exception")
         for name, hook in _exception_hooks.items():
-            print(f" Calling hook {name} ({hook}) for shared.report_exception")
+            print(f" Calling hook {name} ({hook})", source="report_exception")
             try:
                 hook(e, context)
             except ReportExceptionCancellationError as e2:
-                print(f"HOOK CANCELLED EXCEPTION REPORTING: {e2}")
+                print(f"HOOK CANCELLED EXCEPTION REPORTING: {e2}", source="report_exception")
                 if acknowledgement_hook:
+                    print(f"Calling acknowledgement hook ({acknowledgement_hook}) with CANCELLED meta", source="report_exception")
                     spawn_thread(acknowledgement_hook, "CANCELLED")
                 return
             except Exception as e2:
                 quit_error(f"An exception was encountered in exception hook {name} ({hook})", e2)
-        print(f"GEH called")
+        print(f"GEH called", source="report_exception")
         main_thread_async(_global_exception_handler, e, context, acknowledgement_hook)
     except Exception as e:
         quit_error(f"Encountered an exception ({type(e).__name__}) {e}", e)
@@ -296,7 +343,7 @@ def _thread_ctx(func: typing.Callable, context: str, *args, **kwargs):
     try:
         global thread_context
         thread_context.value = context
-        verbose_print("calling", func, "with", args)
+        verbose_print(f"calling {func} with {args}")
         func(*args, **kwargs)
     except Exception as e:
         report_exception(e, context)
@@ -305,7 +352,7 @@ _to_filter_functions = ["_thread_ctx", "run", "_bootstrap_inner", "_bootstrap", 
 
 def exception_to_filtered_traceback(e: Exception, context: str | None = None) -> str:
     filtered = []
-    if not context is None:
+    if context is not None:
         filtered.append(f"Context for exception {type(e).__name__}: {e}:")
         filtered.append(context)
     filtered.append(f"Traceback for exception {type(e).__name__}: {e} (most recent call last):")
@@ -335,12 +382,12 @@ def must_recover(allowed_exceptions: tuple[typing.Type[BaseException]] = tuple([
             except allowed_exceptions:
                 raise
             except Exception as e:
-                print(f"Encountered an exception while running {func}: ({type(e).__name__}) {e}")
+                print(f"Encountered an exception while running {func}: ({type(e).__name__}) {e}", source="MUST RECOVER")
                 try:
-                    print("reporting")
+                    print("  attempting to report it...", source="MUST RECOVER")
                     report_exception(e, context=_try_get_thread_context())
                 except Exception as e2:
-                    print(f"reporting failed {e2}")
+                    print(f"reporting failed with ({type(e2).__name__}) {e2}", source="MUST RECOVER")
             return None
         return wrapper
     return decorator
@@ -415,6 +462,16 @@ def spawn_thread(func: typing.Callable[P, T], *args: P.args, **kwargs: P.kwargs)
     thread = threading.Thread(target=wrapped_thread_ctx, daemon=True)
     thread.start()
 
+def reboot():
+    print(f"REBOOT CALLED: {''.join(traceback.format_stack())}  WITH CONTEXT: {_try_get_thread_context()}")
+    try:
+        with open(DATA_PATH + "persist.txt", "w") as f:
+            f.write('\n'.join(map(lambda file: file.name, logger.files)))
+        logger.close()
+    except:
+        pass
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 def quit() -> typing.Any:
     print(f"DEFAULT shared.quit called!")
     for i in range(5):
@@ -469,7 +526,7 @@ class Checkpoint:
         self.checkpoints.append(("@end", time.monotonic()))
 
     def print(self):
-        print("Checkpoints:")
+        print("Checkpoints:", source="CHECKPOINTS")
         starting_checkpoint = self.checkpoints[0]
         for i, point in enumerate(self.checkpoints):
             if i == 0:
@@ -479,9 +536,9 @@ class Checkpoint:
             start = self.checkpoints[i - 1][1]
             if name.startswith("@"):
                 continue
-            print(f"{name}: {((end - start) * 1000):.2f}ms")
+            print(f"{name}: {((end - start) * 1000):.2f}ms", source="CHECKPOINTS")
         final_checkpoint = self.checkpoints[len(self.checkpoints) - 1]
-        print(f"TOTAL ---\n  {((final_checkpoint[1] - starting_checkpoint[1]) * 1000):.2f}ms")
+        print(f"TOTAL ---\n  {((final_checkpoint[1] - starting_checkpoint[1]) * 1000):.2f}ms", source="CHECKPOINTS")
 
 class TranscriptionCancelledError(RuntimeError):
     pass
@@ -532,7 +589,7 @@ class SharedLoadingState:
             raise exception
         return typing.cast(T, value)
 
-    def ask_allow_or_deny(self, text: str) -> bool:
+    def ask_allow_or_deny(self, text: str, extra_info: str | None = None) -> bool:
         self.settext(text)
         def _resize_window_first():
             if self.window.winfo_width() < 500:
@@ -550,13 +607,18 @@ class SharedLoadingState:
             button_pressed.set()
         allow = None
         deny = None
+        what = None
         def create_buttons():
             nonlocal allow
             nonlocal deny
+            nonlocal what
             allow = tk.Button(self.window, text="Allow", command=on_allow)
             deny = tk.Button(self.window, text="Deny", command=on_deny)
             allow.pack(padx=10, pady=10, side=tk.LEFT)
             deny.pack(padx=10, pady=10, side=tk.LEFT)
+            if extra_info is not None:
+                what = tk.Button(self.window, text="What?", command=lambda: spawn_thread(lambda: messagebox.showinfo("What?", extra_info)))
+                what.pack(padx=10, pady=10, side=tk.LEFT)
             self.on_force_geometry_change()
         main_thread_sync(create_buttons)
         button_pressed.wait()
@@ -565,6 +627,8 @@ class SharedLoadingState:
                 allow.destroy()
             if deny is not None:
                 deny.destroy()
+            if what is not None:
+                what.destroy()
             self.on_force_geometry_change()
         main_thread_sync(destroy_buttons)
         return allowed
@@ -679,6 +743,48 @@ def resize_TopLevel(win: tk.Toplevel, w: int, h: int) -> None:
     new_y = center_y - h // 2
     win.geometry(f"{w}x{h}+{new_x}+{new_y}")
 
+class CUDAError(RuntimeError):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class CUDANotFoundError(RuntimeError):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class CUDANotSupportedError(RuntimeError):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class MajorMinorVersion:
+    def __init__(self, major: int, minor: int):
+        self.major = major
+        self.minor = minor
+
+    @classmethod
+    def from_str(cls, version: str) -> "MajorMinorVersion":
+        listed = version.split(".")
+        if len(listed) != 2:
+            raise RuntimeError(f"Attempted to create a MajorMinorVersion from a string that did not have a major and minor version ({version})")
+        return MajorMinorVersion(int(listed[0]), int(listed[1]))
+
+    def __repr__(self):
+        return f"MajorMinorVersion({self.major}, {self.minor})"
+
+    def __str__(self):
+        return f"{self.major}.{self.minor}"
+
+class CudaVersion:
+    def __init__(self, major: int, minor: int, tag: str, pytorch_version: str, sm_major: int, sm_minor: int):
+        self.major = major
+        self.minor = minor
+        self.tag = tag
+        self.pytorch_version = pytorch_version
+        self.sm_major = sm_major
+        self.sm_minor = sm_minor
+    
+    def __str__(self):
+        return f"CUDA {self.major}.{self.minor} requires SM {self.sm_major}.{self.sm_minor}, has tag {self.tag} and version {self.pytorch_version}"
+
 class ModelLoadingState(SharedLoadingState):
     def __init__(self,
                  window: tk.Tk,
@@ -709,28 +815,38 @@ class ModelLoadingState(SharedLoadingState):
         main_thread_sync(confirm_cpu)
 
     def load_and_check_torch(self):
-        print("Loading pytorch...")
+        print("Loading pytorch...", source="TORCHLOAD")
         self.settext("Loading pytorch...")
-        import torch
-        import torch.version
+        try:
+            import torch
+            import torch.version
+            if ARGS.run_torch_download:
+                raise ModuleNotFoundError("Forced torch loading failure due to --run-torch-download being set.")
+        except ModuleNotFoundError as e:
+            print(f"Couldn't import torch and torch.version: {e}", source="TORCHLOAD")
+            def _show_info():
+                messagebox.showinfo("Torch not found", "PyTorch was not found! Use this installer or run setup.bat again.")
+            main_thread_async(_show_info)
+            time.sleep(0.5)
+            self.run_pytorch_downloader()
+            raise ModelInitCancelledError()
         print("Initialized.")
-        print("torch version:", torch.__version__)
-        print("cuda available:", torch.cuda.is_available())
-        print("cuda version:", torch.version.cuda)
-        print("Torch threads:", torch.get_num_threads())
-        print("Torch interop:", torch.get_num_interop_threads())
-        print("Python threads:", len(threading.enumerate()))
+        print(f"torch version: {torch.__version__}", source="TORCHLOAD")
+        print(f"cuda available: {torch.cuda.is_available()}", source="TORCHLOAD")
+        print(f"cuda version: {torch.version.cuda}", source="TORCHLOAD")
+        print(f"Torch threads: {torch.get_num_threads()}", source="TORCHLOAD")
+        print(f"Torch interop: {torch.get_num_interop_threads()}", source="TORCHLOAD")
+        print(f"Python threads: {len(threading.enumerate())}", source="TORCHLOAD")
         if not torch.cuda.is_available() and not self.allow_cpu:
             self.settext("Waiting for user input...")
             why_no_cuda = "Something went wrong."
             try:
                 torch.cuda.current_device()
             except Exception as e:
-                print(type(e).__name__)
-                print(e)
+                print(f"Encountered an exception while checking cuda device: {type(e).__name__} {e}", source="TORCHLOAD")
                 why_no_cuda = f"{e}"
             def download_pytorch() -> bool | None:
-                return messagebox.askyesnocancel("STT Loaded to CPU", f"PyTorch was loaded to your CPU because CUDA wasn't available: {why_no_cuda}\nThis will lead to degraded performance.\nPress YES to download pytorch for GPU, press NO to ignore, and press CANCEL to close STT.\nDisable this warning in the config by changing warn_on_cpu to false.")
+                return messagebox.askyesno("STT Loaded to CPU", f"PyTorch was loaded to your CPU because CUDA wasn't available: {why_no_cuda}\nThis will lead to degraded performance.\nPress YES to download pytorch for GPU or press NO to ignore.\nDisable this warning in the settings by changing warn_on_cpu to false.")
             choice = main_thread_sync(download_pytorch)
             if choice is None:
                 self.quit()
@@ -744,10 +860,15 @@ class ModelLoadingState(SharedLoadingState):
         def worker():
             self.settext("Waiting for PyTorch version to be selected...")
             window = TopLevelCentered(w=700, h=500)
+            CAN_QUIT_QUIETLY = True
             def window_close_hook():
-                window.destroy()
-                self.quit()
+                if CAN_QUIT_QUIETLY:
+                    window.destroy()
+                    self.quit()
+                else:
+                    messagebox.showwarning("Installation in progress", "The installation is still in progress. It may look frozen at times. Wait for the popup telling you the download is finished!")
             window.protocol("WM_DELETE_WINDOW", window_close_hook)
+            window.focus_force()
             window.title("STT PyTorch Cuda Installer")
             setattr(window, "gpu_var", tk.StringVar(window, value="Detecting..."))
             setattr(window, "driver_var", tk.StringVar(window, value="Detecting..."))
@@ -773,13 +894,47 @@ class ModelLoadingState(SharedLoadingState):
                 return f"https://download.pytorch.org/whl/{cuda_tag}"
 
             def install_pytorch():
+                nonlocal CAN_QUIT_QUIETLY
                 self.tk_config(install_button, state="disabled")
                 def worker():
+                    nonlocal CAN_QUIT_QUIETLY
+                    CAN_QUIT_QUIETLY = False
                     try:
                         if cuda_tag is None or torch_version is None:
+                            try:
+                                import torch
+                            except ModuleNotFoundError:
+                                messagebox.showerror("Torch not found", "Torch was not installed. Run setup.bat again to fix this.")
+                                return
+                            messagebox.showerror("No CUDA available", "Can't find a matching version of PyTorch. STT will now use your CPU, not your GPU. This is much slower.")
+                            try:
+                                import tomlkit
+                                with open(CONFIG_FILENAME, "r", encoding="utf-8") as f:
+                                    config = tomlkit.parse(f.read())
+                                config["meta"]["warn_on_cpu"] = False
+                                with open(CONFIG_FILENAME, "w", encoding="utf-8") as f:
+                                    f.write(tomlkit.dumps(config))
+                            except Exception as e:
+                                report_exception(e)
+                                pass
+                            messagebox.showinfo("Restart required", "Please restart STT. Note that you are using CPU inference, which is much slower.")
                             return
+                        PINNED_TORCHAUDIO_VERSIONS = {
+                            "2.12.0": "2.11.0",
+                            "2.2.2": "2.2.2"
+                        }
+                        PINNED_NUMPY_VERSION = "1.26.4"
                         cmd = [sys.executable, "-m", "pip", "install",
-                                f"torch=={torch_version}+{cuda_tag}", "--force-reinstall", "lightning<2.4.0", "fsspec==2024.12.0", "numpy==1.26.4", "--extra-index-url", suggested_cuda_URL()]
+                                f"torch=={torch_version}+{cuda_tag}",
+                                "--force-reinstall",
+                                "lightning<2.4.0",
+                                f"torchaudio=={PINNED_TORCHAUDIO_VERSIONS.get(torch_version, '2.11.0')}",
+                                "fsspec==2024.12.0",
+                                "pyarrow<26",
+                                f"numpy=={PINNED_NUMPY_VERSION}",
+                                "--extra-index-url",
+                                suggested_cuda_URL()
+                                ]
                         write_log("Running: ")
                         write_log(" ".join(cmd))
                         process = subprocess.Popen(
@@ -796,19 +951,40 @@ class ModelLoadingState(SharedLoadingState):
                         code = process.wait()
                         if code == 0:
                             def finished():
+                                nonlocal CAN_QUIT_QUIETLY
+                                CAN_QUIT_QUIETLY = True
+                                self.hide_spinner()
+                                self.settext("Install complete!")
                                 messagebox.showinfo("Success", "PyTorch installer completed.")
+                                reboot()
                                 self.quit()
                         else:
                             def finished():
+                                nonlocal CAN_QUIT_QUIETLY
+                                CAN_QUIT_QUIETLY = True
+                                self.hide_spinner()
+                                self.settext("Install failed!")
                                 messagebox.showinfo("Failed", f"PyTorch installer failed with code {code}!\nIf you want to install PyTorch yourself, run the command in the log.\nYou can also try googling PyTorch CUDA install!")
                                 self.quit()
                         self.mainthread(finished)
                     except Exception as e:
+                        CAN_QUIT_QUIETLY = True
+                        self.hide_spinner()
+                        self.settext("Install failed!")
                         messagebox.showwarning("An error occurred", f"An error occurred while trying to install CUDA: {e}")
-                spawn_thread(worker)
+                def driver():
+                    global CAN_QUIT_QUIETLY
+                    try:
+                        worker()
+                    except:
+                        raise
+                    finally:
+                        CAN_QUIT_QUIETLY = True
+                spawn_thread(driver)
                         
             def write_log(text: str):
                 def worker():
+                    print(text, source="CUDA WORKER")
                     log.insert(tk.END, text + "\n")
                     log.see(tk.END)
                 main_thread_sync(worker)
@@ -823,56 +999,165 @@ class ModelLoadingState(SharedLoadingState):
             log.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
             window.grid_rowconfigure(4, weight=1)
             window.grid_columnconfigure(1, weight=1)
+            window.attributes('-topmost', True)
+            window.after_idle(window.attributes, '-topmost', False)
+            window.update_idletasks()
             write_log(" -- CUDA install log --")
+            USED_NVIDIA_SMI_PATH = ""
             try:
                 result = subprocess.run(
                     ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                     capture_output=True, text=True, check=True
                 )
+                USED_NVIDIA_SMI_PATH = "nvidia-smi"
+            except FileNotFoundError as e:
+                fallback_path = r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+                write_log(f"Couldn't find nvidia-smi on path, checking {fallback_path}")
+                result = subprocess.run(
+                    [fallback_path, "--query-gpu=name", "--format=csv,noheader"],
+                    capture_output=True, text=True, check=True
+                )
+                USED_NVIDIA_SMI_PATH = fallback_path
             except Exception as e:
                 write_log(f"No NVIDIA GPU detected. ({type(e).__name__}) {e}")
                 gpu_var.set("No NVIDIA GPU detected")
                 driver_var.set("N/A")
                 recommendation_var.set("CPU Only")
-                self.tk_config(install_button, state="disabled")
+                self.tk_config(install_button, state="enabled")
                 return
             gpu_name = result.stdout.splitlines()[0].strip()
+            cuda_version: MajorMinorVersion | None = None
             try:
                 write_log(f"Found GPU {gpu_name}")
                 write_log("Detecting NVIDIA driver CUDA support...")
                 result = subprocess.run(
-                    ["nvidia-smi"],
+                    [USED_NVIDIA_SMI_PATH],
                     capture_output=True, text=True, check=True
                 )
-                match = re.search(r"CUDA Version:\s+(\d+\.\d+)", result.stdout)
+                match = re.search(r"CUDA (?:UMD )?Version:\s+(\d+\.\d+)", result.stdout)
+                print(f"nvidia-smi output:", source="NVIDIA-SMI")
+                for line in result.stdout.splitlines():
+                    print(line, source="NVIDIA-SMI")
                 if not match:
-                    raise RuntimeError("Unable to determine CUDA version from nvidia-smi.")
-                cuda_version = float(match.group(1))
+                    raise CUDANotFoundError("Unable to determine CUDA version from nvidia-smi.")
+                cuda_version = MajorMinorVersion.from_str(match.group(1))
                 write_log(f"Driver supports CUDA {cuda_version}")
                 gpu_var.set(gpu_name)
                 driver_var.set(match.group(1))
-                pytorch_cuda_versions = [(13.2, "cu132", "2.12.0"), (13.0, "cu130", "2.12.0"), (12.8, "cu128", "2.12.0"), (12.6, "cu126", "2.12.0"), (11.8, "cu118", "2.2.2")]
+                pytorch_cuda_versions = [
+                    CudaVersion(13, 2, "cu132", "2.12.0", 7, 5),
+                    CudaVersion(13, 0, "cu130", "2.12.0", 7, 5),
+                    CudaVersion(12, 8, "cu128", "2.11.0", 7, 5),
+                    CudaVersion(12, 6, "cu126", "2.12.0", 5, 0),
+                    CudaVersion(11, 8, "cu118", "2.2.0",  5, 0),
+                ]
                 cuda_tag = None
-                for required_version, tag, pt_version in pytorch_cuda_versions:
-                    if cuda_version >= required_version:
-                        cuda_tag = tag
-                        torch_version = pt_version
-                        break
+                GPUSM = MajorMinorVersion(0,0)
+                import pynvml
+                print(f"Performing NVML check to determine GPU SM", source="NVML")
+                try:
+                    pynvml.nvmlInit()
+                    device_count = pynvml.nvmlDeviceGetCount()
+                    print(f"Found {device_count} devices", source="NVML")
+                    for i in range(device_count):
+                        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                        name = pynvml.nvmlDeviceGetName(handle)
+                        if isinstance(name, bytes):
+                            name = name.decode("utf-8")
+                        print(f"Device {i} handle {handle} has name {name}", source="NVML")
+                        if name.strip().lower() == gpu_name.strip().lower():
+                            major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+                            print(f"Device {i} handle {handle} matches GPU name {gpu_name}; SM {major}.{minor}", source="NVML")
+                            GPUSM.major = major
+                            GPUSM.minor = minor
+                            break
+                    else:
+                        raise ValueError(f"GPU '{gpu_name}' not found.")
+                except:
+                    write_log(f"Couldn't determine GPU SM version, using 7.5")
+                    GPUSM.major = 7
+                    GPUSM.minor = 5
+                finally:
+                    pynvml.nvmlShutdown()
+                print(f"Finished NVML check.", source="NVML")
+                selected_cuda_version_major_minor = MajorMinorVersion(0,0)
+                for possible_version in pytorch_cuda_versions:
+                    if cuda_version.major < possible_version.major:
+                        print(f"Not choosing cuda version {possible_version} because major version was too low {cuda_version.major} vs {possible_version.major}.", source="CUDA")
+                        continue
+                    if cuda_version.major == possible_version.major and cuda_version.minor < possible_version.minor:
+                        print(f"Not choosing cuda version {possible_version} because minor version was too low {cuda_version.minor} vs {possible_version.minor}.", source="CUDA")
+                        continue
+                    print(f"Candidate cuda version {possible_version.tag} found, checking SM against gpu {gpu_name}", source="CUDA")
+                    if GPUSM.major < possible_version.sm_major:
+                        print(f"Not choosing cuda version {possible_version} because GPUSM {GPUSM} did not meet required SM: {possible_version.sm_major}.{possible_version.sm_minor}")
+                        write_log(f"Couldn't choose cuda {possible_version.major}.{possible_version.minor} because GPU SM {GPUSM} did not meet the required SM: {possible_version.sm_major}.{possible_version.sm_minor}")
+                        continue
+                    if GPUSM.minor == possible_version.sm_minor and GPUSM.major < possible_version.sm_major:
+                        print(f"Not choosing cuda version {possible_version} because GPUSM {GPUSM} did not meet required SM: {possible_version.sm_major}.{possible_version.sm_minor}")
+                        write_log(f"Couldn't choose cuda {possible_version.major}.{possible_version.minor} because GPU SM {GPUSM} did not meet the required SM: {possible_version.sm_major}.{possible_version.sm_minor}")
+                        continue
+                    cuda_tag = possible_version.tag
+                    torch_version = possible_version.pytorch_version
+                    selected_cuda_version_major_minor.major = possible_version.major
+                    selected_cuda_version_major_minor.minor = possible_version.minor
+                    write_log(f"Chose CUDA {selected_cuda_version_major_minor} ({cuda_tag}) with pytorch version {torch_version}.")
+                    break
                 if cuda_tag is None:
-                    raise RuntimeError(
+                    raise CUDANotSupportedError(
                         f"No supported PyTorch CUDA build for CUDA {cuda_version}"
                     )
                 recommendation_var.set(
-                    f"CUDA {cuda_tag[2]}.{cuda_tag[3:]} (PyTorch v{torch_version})"
+                    f"CUDA {selected_cuda_version_major_minor} (PyTorch v{torch_version})"
+                )
+            except CUDANotFoundError as e:
+                gpu_var.set(gpu_name)
+                write_log(f"CUDA detection failed: {e}")
+                if messagebox.askyesno("Use CUDA 12.8?", f"Would you like to use CUDA 12.8? If your GPU ({gpu_name}) is at least a 10xx or higher, you can probably run CUDA 12.8."):
+                    write_log(f"User selected CUDA 12.8 as fallback.")
+                    driver_var.set("Unknown (user-selected 12.8)")
+                    cuda_version = MajorMinorVersion(12, 8)
+                    cuda_tag = "cu128"
+                    torch_version = "2.11.0"
+                    recommendation_var.set(
+                        f"CUDA 12.8 (PyTorch v{torch_version})"
+                    )
+                else:
+                    write_log(f"User selected CPU as fallback.")
+                    gpu_var.set("CPU")
+                    cuda_tag = None
+                    recommendation_var.set(
+                        f"CPU (PyTorch v{torch_version})"
+                    )
+            except CUDANotSupportedError as e:
+                gpu_var.set(gpu_name)
+                write_log(f"No supported PyTorch version found for cuda version {cuda_version}. The minimum supported cuda version is 11.8.")
+                try:
+                    result = subprocess.run(
+                        [USED_NVIDIA_SMI_PATH, "--query-gpu=driver_version", "--format=csv,noheader"],
+                        capture_output=True, text=True, check=True
+                    )
+                    driver_version = result.stdout.strip().splitlines()[0]
+                    version_tuple = tuple(map(int, driver_version.split(".")))
+                    is_compatible = version_tuple >= (522, 6)
+                    if not is_compatible:
+                        messagebox.showwarning("Driver out of date", f"Your GPU driver is out of date. To run Speech To Text, update to at least driver version 522.06. Your GPU driver version is {driver_version}")
+                except Exception as e:
+                    write_log(f"Got error while checking GPU driver version: ({type(e).__name__}) {e}")
+                driver_var.set(f"{cuda_version}")
+                cuda_version = None
+                cuda_tag = None
+                recommendation_var.set(
+                    f"CPU (PyTorch v{torch_version})"
                 )
             except Exception as e:
                 write_log(f"CUDA detection warning: ({type(e).__name__}) {e}")
                 write_log("Assuming CUDA 12.8 as fallback.")
 
                 gpu_var.set(gpu_name)
-                driver_var.set("Unknown (assuming CUDA 12.8)")
+                driver_var.set(f"{'Unknown' if cuda_version is None else str(cuda_version)} (assuming CUDA 12.8)")
 
-                cuda_version = 12.8
+                cuda_version = MajorMinorVersion(12, 8)
                 cuda_tag = "cu128"
                 torch_version = "2.11.0"
 
@@ -882,6 +1167,8 @@ class ModelLoadingState(SharedLoadingState):
             finally:
                 write_log(f"PyTorch install URL:")
                 write_log(f"  {suggested_cuda_URL()}")
+                if cuda_tag is None:
+                    write_log(f"For manual install, cd into STT, run \"venv\\scripts\\activate\", then install your pytorch version. Make sure to include --force-reinstall.")
         self.mainthread(worker)
 
 class SimpleASRModel:

@@ -7,11 +7,15 @@ import sys
 import os
 import time
 
-TOTAL_PACKAGE_SIZE_MB = 1800
+TOTAL_PACKAGE_SIZE_MB = 1700
 TOPLEVEL_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+_scanned_files = 0
+_max_scan_before_pause = 300
+
 def get_dir_size(path: str):
-    time.sleep(0.05)
+    global _scanned_files
+    global _max_scan_before_pause
     total = 0
     stack = [path]
     while stack:
@@ -22,6 +26,10 @@ def get_dir_size(path: str):
                     if entry.is_dir(follow_symlinks=False):
                         stack.append(entry.path)
                     elif entry.is_file(follow_symlinks=False):
+                        _scanned_files += 1
+                        if _scanned_files > _max_scan_before_pause:
+                            _scanned_files = 0
+                            time.sleep(0.05)
                         total += entry.stat(follow_symlinks=False).st_size
                 except OSError:
                     pass
@@ -31,16 +39,13 @@ INSTALLATION_TEXT = "Installing dependencies...\nThis may take several minutes."
 
 _spinner = "-"
 def wheel() -> str:
-    global _spinner
-    nuvalue = "-"
     if _spinner == "-":
-        nuvalue = "\\"
+        return "\\"
     if _spinner == "\\":
-        nuvalue = "|"
+        return "|"
     if _spinner == "|":
-        nuvalue ="/"
-    _spinner = nuvalue
-    return nuvalue
+        return "/"
+    return "-"
 
 if __name__ == "__main__":
     root = tk.Tk()
@@ -50,19 +55,45 @@ if __name__ == "__main__":
     status_label = tk.Label(root, text=INSTALLATION_TEXT, justify="center", font=("Arial", 10))
     status_label.pack(pady=(20, 10))
     progress = ttk.Progressbar(root, mode="indeterminate", length=350)
-    progress.pack(pady=10)
     progress.start(10)
+    progress.pack(pady=10)
     IS_DONE_INSTALLING = False
     PIP_PROCESS = None
     FINISH_RETURN_CODE = 0
     def install_progress_worker():
+        current_mode = "indeterminate"
         while not IS_DONE_INSTALLING:
-            time.sleep(5)
-            size = get_dir_size(TOPLEVEL_DIRECTORY) // (1024 ** 2)
-            if size > TOTAL_PACKAGE_SIZE_MB:
-                root.after(0, lambda: status_label.config(text=f"{INSTALLATION_TEXT} Performing cleanup... {wheel()}"))
-            else:
-                root.after(0, lambda: status_label.config(text=f"{INSTALLATION_TEXT} ({size}/{TOTAL_PACKAGE_SIZE_MB} MB)"))
+            try:
+                start = time.time()
+                size = get_dir_size(TOPLEVEL_DIRECTORY) // (1024 ** 2)
+                def to_determinate(mb: float):
+                    nonlocal current_mode
+                    if current_mode != "determinate":
+                        current_mode = "determinate"
+                        progress.stop()
+                        progress.config(mode="determinate", maximum=TOTAL_PACKAGE_SIZE_MB)
+                    progress.config(value=mb)
+
+                def to_indeterminate():
+                    nonlocal current_mode
+                    if current_mode != "indeterminate":
+                        current_mode = "indeterminate"
+                        progress.stop()
+                        progress.config(mode="indeterminate", maximum=100)
+                        progress.start(10)
+
+                if size > TOTAL_PACKAGE_SIZE_MB:
+                    root.after(0, lambda: status_label.config(text=f"{INSTALLATION_TEXT} Performing cleanup... {wheel()}"))
+                    root.after(0, lambda: to_indeterminate())
+                else:
+                    root.after(0, lambda: status_label.config(text=f"{INSTALLATION_TEXT} ({size}/{TOTAL_PACKAGE_SIZE_MB} MB)"))
+                    root.after(0, lambda: to_determinate(size))
+                elapsed = time.time() - start
+                if elapsed < 5:
+                    time.sleep(5 - elapsed)
+            except Exception as e:
+                print(f"EXCEPTION IN INSTALL PROGRESS WORKER: ({type(e).__name__}) {e}")
+                time.sleep(10)
 
     def window_close_hook():
         if IS_DONE_INSTALLING:
