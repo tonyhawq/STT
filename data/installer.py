@@ -11,7 +11,7 @@ TOTAL_PACKAGE_SIZE_MB = 1800
 TOPLEVEL_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def get_dir_size(path: str):
-    time.sleep(0.01)
+    time.sleep(0.05)
     total = 0
     stack = [path]
     while stack:
@@ -31,13 +31,16 @@ INSTALLATION_TEXT = "Installing dependencies...\nThis may take several minutes."
 
 _spinner = "-"
 def wheel() -> str:
+    global _spinner
+    nuvalue = "-"
     if _spinner == "-":
-        return "\\"
+        nuvalue = "\\"
     if _spinner == "\\":
-        return "|"
+        nuvalue = "|"
     if _spinner == "|":
-        return "/"
-    return "-"
+        nuvalue ="/"
+    _spinner = nuvalue
+    return nuvalue
 
 if __name__ == "__main__":
     root = tk.Tk()
