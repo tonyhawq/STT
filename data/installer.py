@@ -4,13 +4,47 @@ from tkinter import messagebox
 import subprocess
 import threading
 import sys
+import os
+import time
+
+TOTAL_PACKAGE_SIZE_MB = 1800
+TOPLEVEL_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def get_dir_size(path: str):
+    time.sleep(0.01)
+    total = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        with os.scandir(current) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+    return total
+
+INSTALLATION_TEXT = "Installing dependencies...\nThis may take several minutes."
+
+_spinner = "-"
+def wheel() -> str:
+    if _spinner == "-":
+        return "\\"
+    if _spinner == "\\":
+        return "|"
+    if _spinner == "|":
+        return "/"
+    return "-"
 
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("Installing Dependencies")
     root.geometry("450x150")
     root.resizable(True, True)
-    status_label = tk.Label(root, text="Installing dependencies...\nThis may take several minutes.", justify="center", font=("Arial", 10))
+    status_label = tk.Label(root, text=INSTALLATION_TEXT, justify="center", font=("Arial", 10))
     status_label.pack(pady=(20, 10))
     progress = ttk.Progressbar(root, mode="indeterminate", length=350)
     progress.pack(pady=10)
@@ -18,6 +52,15 @@ if __name__ == "__main__":
     IS_DONE_INSTALLING = False
     PIP_PROCESS = None
     FINISH_RETURN_CODE = 0
+    def install_progress_worker():
+        while not IS_DONE_INSTALLING:
+            time.sleep(5)
+            size = get_dir_size(TOPLEVEL_DIRECTORY) // (1024 ** 2)
+            if size > TOTAL_PACKAGE_SIZE_MB:
+                root.after(0, lambda: status_label.config(text=f"{INSTALLATION_TEXT} Performing cleanup... {wheel()}"))
+            else:
+                root.after(0, lambda: status_label.config(text=f"{INSTALLATION_TEXT} ({size}/{TOTAL_PACKAGE_SIZE_MB} MB)"))
+
     def window_close_hook():
         if IS_DONE_INSTALLING:
             root.destroy()
@@ -44,6 +87,7 @@ if __name__ == "__main__":
         IS_DONE_INSTALLING = True
         root.quit()
     threading.Thread(target = do_install, daemon=True).start()
+    threading.Thread(target = install_progress_worker, daemon=True).start()
     root.mainloop()
     if not IS_DONE_INSTALLING:
         sys.exit(1)
